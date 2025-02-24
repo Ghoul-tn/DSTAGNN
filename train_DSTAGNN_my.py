@@ -41,8 +41,8 @@ training_config = config['Training']
 
 adj_filename = data_config['adj_filename']
 graph_signal_matrix_filename = data_config['graph_signal_matrix_filename']
-stag_filename = data_config['stag_filename']
-strg_filename = data_config['strg_filename']
+stag_filename = data_config.get('stag_filename', None)
+strg_filename = data_config.get('strg_filename', None)
 if config.has_option('Data', 'id_filename'):
     id_filename = data_config['id_filename']
 else:
