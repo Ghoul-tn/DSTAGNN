@@ -19,7 +19,6 @@ def search_data(sequence_length, num_of_depend, label_start_idx,
     ----------
     list[(start_idx, end_idx)]
     '''
-
     if points_per_hour < 0:
         raise ValueError("points_per_hour should be greater than 0!")
 
@@ -49,7 +48,7 @@ def get_sample_indices(data_sequence, num_of_weeks, num_of_days, num_of_hours,
     data_sequence: np.ndarray
                    shape is (sequence_length, num_of_vertices, num_of_features)
     num_of_weeks, num_of_days, num_of_hours: int
-    label_start_idx: int, the first index of predicting target, 预测值开始的那个点
+    label_start_idx: int, the first index of predicting target
     num_for_predict: int,
                      the number of points will be predicted for each sample
     points_per_hour: int, default 12, number of points per hour
@@ -108,9 +107,8 @@ def get_sample_indices(data_sequence, num_of_weeks, num_of_days, num_of_hours,
 
 
 def read_and_generate_dataset(graph_signal_matrix_filename,
-                                                     num_of_weeks, num_of_days,
-                                                     num_of_hours, num_for_predict,
-                                                     points_per_hour=12, save=False):
+                              num_of_weeks, num_of_days, num_of_hours,
+                              num_for_predict, points_per_hour=12, save=False):
     '''
     Parameters
     ----------
@@ -127,129 +125,42 @@ def read_and_generate_dataset(graph_signal_matrix_filename,
     target: np.ndarray,
             shape is (num_of_samples, num_of_vertices, num_for_predict)
     '''
-    maxall = 0
-    data_seq = np.load(graph_signal_matrix_filename)['data']  # (sequence_length, num_of_vertices, num_of_features)
-    # c = [57,68,89,125,132,148,190,213,217,233]
-    # data_seq = data_seq[:, c]
-    all_samples = []
-    for idx in range(data_seq.shape[0]):
-        sample = get_sample_indices(data_seq, num_of_weeks, num_of_days,
-                                    num_of_hours, idx, num_for_predict,
-                                    points_per_hour)
-        if ((sample[0] is None) and (sample[1] is None) and (sample[2] is None)):
-            continue
+    # Load the input features and target
+    data = np.load(graph_signal_matrix_filename)
+    input_features = data['data']  # Shape: (num_timesteps, num_nodes, num_features)
+    target = data['target']  # Shape: (num_timesteps, num_nodes)
 
-        week_sample, day_sample, hour_sample, target = sample
+    # Ensure the data is in the correct shape
+    if len(input_features.shape) != 3:
+        raise ValueError("Input data must have shape (num_timesteps, num_nodes, num_features)")
+    if len(target.shape) != 2:
+        raise ValueError("Target data must have shape (num_timesteps, num_nodes)")
 
-        sample = []  # [(week_sample),(day_sample),(hour_sample),target,time_sample]
+    # Split the data into training, validation, and test sets
+    num_samples = input_features.shape[0]
+    train_size = int(num_samples * 0.6)
+    val_size = int(num_samples * 0.2)
 
-        if num_of_weeks > 0:
-            week_sample = np.expand_dims(week_sample, axis=0).transpose((0, 2, 3, 1))  # (1,N,F,T)
-            sample.append(week_sample)
+    train_data = input_features[:train_size]
+    val_data = input_features[train_size:train_size + val_size]
+    test_data = input_features[train_size + val_size:]
 
-        if num_of_days > 0:
-            day_sample = np.expand_dims(day_sample, axis=0).transpose((0, 2, 3, 1))  # (1,N,F,T)
-            sample.append(day_sample)
+    train_target = target[:train_size]
+    val_target = target[train_size:train_size + val_size]
+    test_target = target[train_size + val_size:]
 
-        if num_of_hours > 0:
-            # hour_sample = np.expand_dims(hour_sample, axis=0)
-            myhour_sample = hour_sample[:,:,0]
-            max1 = np.amax(myhour_sample, axis=0)
-            max2 = np.amax(max1, axis=0)
-            if max2 > maxall:
-                maxall = max2
-            hour_sample = np.expand_dims(hour_sample, axis=0).transpose((0, 2, 3, 1))  # (1,N,F,T)
-
-            # hour_sample = np.expand_dims(hour_sample, axis=0).transpose((0, 3, 1, 2))
-            sample.append(hour_sample)
-
-        # mytarget = np.expand_dims(target, axis=0).transpose((0, 2, 3, 1))
-        target = np.expand_dims(target, axis=0).transpose((0, 2, 3, 1))[:, :, 0, :]  # (1,N,T)
-        # mytarget = np.expand_dims(target, axis=0).transpose((0, 2, 1))
-        sample.append(target)
-
-        time_sample = np.expand_dims(np.array([idx]), axis=0)  # (1,1)
-        sample.append(time_sample)
-
-        all_samples.append(
-            sample)  # sampe：[(week_sample),(day_sample),(hour_sample),target,time_sample] = [(1,N,F,Tw),(1,N,F,Td),(1,N,F,Th),(1,N,Tpre),(1,1)]
-
-    split_line1 = int(len(all_samples) * 0.6)
-    split_line2 = int(len(all_samples) * 0.8)
-    print(maxall)
-
-    training_set = [np.concatenate(i, axis=0)
-                    for i in zip(*all_samples[:split_line1])]  # [(B,N,F,Tw),(B,N,F,Td),(B,N,F,Th),(B,N,Tpre),(B,1)]
-    validation_set = [np.concatenate(i, axis=0)
-                      for i in zip(*all_samples[split_line1: split_line2])]
-    testing_set = [np.concatenate(i, axis=0)
-                   for i in zip(*all_samples[split_line2:])]
-
-    train_x = np.concatenate(training_set[:-2], axis=-1)  # (B,N,F,T')
-    val_x = np.concatenate(validation_set[:-2], axis=-1)
-    test_x = np.concatenate(testing_set[:-2], axis=-1)
-
-    train_target = training_set[-2]  # (B,N,T)
-    val_target = validation_set[-2]
-    test_target = testing_set[-2]
-
-    train_timestamp = training_set[-1]  # (B,1)
-    val_timestamp = validation_set[-1]
-    test_timestamp = testing_set[-1]
-
-    (stats, train_x_norm, val_x_norm, test_x_norm) = normalization(train_x, val_x, test_x)
-
-    all_data = {
-        'train': {
-            'x': train_x_norm,
-            'target': train_target,
-            'timestamp': train_timestamp,
-        },
-        'val': {
-            'x': val_x_norm,
-            'target': val_target,
-            'timestamp': val_timestamp,
-        },
-        'test': {
-            'x': test_x_norm,
-            'target': test_target,
-            'timestamp': test_timestamp,
-        },
-        'stats': {
-            '_mean': stats['_mean'],
-            '_std': stats['_std'],
-        }
-    }
-    print('train x:', all_data['train']['x'].shape)
-    print('train target:', all_data['train']['target'].shape)
-    print('train timestamp:', all_data['train']['timestamp'].shape)
-    print()
-    print('val x:', all_data['val']['x'].shape)
-    print('val target:', all_data['val']['target'].shape)
-    print('val timestamp:', all_data['val']['timestamp'].shape)
-    print()
-    print('test x:', all_data['test']['x'].shape)
-    print('test target:', all_data['test']['target'].shape)
-    print('test timestamp:', all_data['test']['timestamp'].shape)
-    print()
-    print('train data _mean :', stats['_mean'].shape, stats['_mean'])
-    print('train data _std :', stats['_std'].shape, stats['_std'])
-
+    # Save the datasets (optional)
     if save:
         file = os.path.basename(graph_signal_matrix_filename).split('.')[0]
         dirpath = os.path.dirname(graph_signal_matrix_filename)
-        filename = os.path.join(dirpath, file +  '_r' + str(num_of_hours) + '_d' + str(num_of_days) + '_w' + str(num_of_weeks)) + '_dstagnn'
+        filename = os.path.join(dirpath, f"{file}_r{num_of_hours}_d{num_of_days}_w{num_of_weeks}_dstagnn")
         print('save file:', filename)
         np.savez_compressed(filename,
-                            train_x=all_data['train']['x'], train_target=all_data['train']['target'],
-                            train_timestamp=all_data['train']['timestamp'],
-                            val_x=all_data['val']['x'], val_target=all_data['val']['target'],
-                            val_timestamp=all_data['val']['timestamp'],
-                            test_x=all_data['test']['x'], test_target=all_data['test']['target'],
-                            test_timestamp=all_data['test']['timestamp'],
-                            mean=all_data['stats']['_mean'], std=all_data['stats']['_std']
-                            )
-    return all_data
+                            train_x=train_data, train_target=train_target,
+                            val_x=val_data, val_target=val_target,
+                            test_x=test_data, test_target=test_target)
+
+    return train_data, val_data, test_data, train_target, val_target, test_target
 
 
 def normalization(train, val, test):
@@ -263,12 +174,11 @@ def normalization(train, val, test):
     train_norm, val_norm, test_norm: np.ndarray,
                                      shape is the same as original
     '''
-
     assert train.shape[1:] == val.shape[1:] and val.shape[1:] == test.shape[1:]  # ensure the num of nodes is the same
-    mean = train.mean(axis=(0,1,3), keepdims=True)
-    std = train.std(axis=(0,1,3), keepdims=True)
-    print('mean.shape:',mean.shape)
-    print('std.shape:',std.shape)
+    mean = train.mean(axis=(0, 1, 3), keepdims=True)
+    std = train.std(axis=(0, 1, 3), keepdims=True)
+    print('mean.shape:', mean.shape)
+    print('std.shape:', std.shape)
 
     def normalize(x):
         return (x - mean) / std
@@ -280,9 +190,9 @@ def normalization(train, val, test):
     return {'_mean': mean, '_std': std}, train_norm, val_norm, test_norm
 
 
-# prepare dataset
+# Prepare dataset
 parser = argparse.ArgumentParser()
-parser.add_argument("--config", default='configurations/PEMS04_dstagnn.conf', type=str,
+parser.add_argument("--config", default='configurations/Gambia.conf', type=str,
                     help="configuration file path")
 args = parser.parse_args()
 config = configparser.ConfigParser()
@@ -310,7 +220,6 @@ num_of_vertices = int(data_config['num_of_vertices'])
 points_per_hour = int(data_config['points_per_hour'])
 num_for_predict = int(data_config['num_for_predict'])
 graph_signal_matrix_filename = data_config['graph_signal_matrix_filename']
-data = np.load(graph_signal_matrix_filename)
-data['data'].shape
 
+# Load and preprocess the data
 all_data = read_and_generate_dataset(graph_signal_matrix_filename, num_of_weeks, num_of_days, num_of_hours, num_for_predict, points_per_hour=points_per_hour, save=True)
