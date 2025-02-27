@@ -136,6 +136,9 @@ def read_and_generate_dataset(graph_signal_matrix_filename,
     if len(target.shape) != 2:
         raise ValueError("Target data must have shape (num_timesteps, num_nodes)")
 
+    # Add a new dimension for num_features
+    input_features = np.expand_dims(input_features, axis=-1)  # Shape: (num_timesteps, num_nodes, num_features, 1)
+
     # Split the data into training, validation, and test sets
     num_samples = input_features.shape[0]
     train_size = int(num_samples * 0.6)
@@ -152,7 +155,7 @@ def read_and_generate_dataset(graph_signal_matrix_filename,
     # Save the datasets (optional)
     if save:
         file = os.path.basename(graph_signal_matrix_filename).split('.')[0]
-        dirpath = os.path.dirname("/kaggle/working/")
+        dirpath = os.path.dirname(graph_signal_matrix_filename)
         filename = os.path.join(dirpath, f"{file}_r{num_of_hours}_d{num_of_days}_w{num_of_weeks}_dstagnn")
         print('save file:', filename)
         np.savez_compressed(filename,
