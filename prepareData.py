@@ -152,16 +152,21 @@ def read_and_generate_dataset(graph_signal_matrix_filename,
     val_target = target[train_size:train_size + val_size]
     test_target = target[train_size + val_size:]
 
+    # Compute mean and std for normalization
+    mean = train_data.mean(axis=(0, 1, 3), keepdims=True)
+    std = train_data.std(axis=(0, 1, 3), keepdims=True)
+
     # Save the datasets (optional)
     if save:
         file = os.path.basename(graph_signal_matrix_filename).split('.')[0]
-        dirpath = os.path.dirname('/kaggle/working/')
+        dirpath = os.path.dirname(graph_signal_matrix_filename)
         filename = os.path.join(dirpath, f"{file}_r{num_of_hours}_d{num_of_days}_w{num_of_weeks}_dstagnn")
         print('save file:', filename)
         np.savez_compressed(filename,
                             train_x=train_data, train_target=train_target,
                             val_x=val_data, val_target=val_target,
-                            test_x=test_data, test_target=test_target)
+                            test_x=test_data, test_target=test_target,
+                            mean=mean, std=std)
 
     return train_data, val_data, test_data, train_target, val_target, test_target
 
