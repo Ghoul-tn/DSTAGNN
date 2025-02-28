@@ -97,8 +97,8 @@ if dataset_name == 'PEMS04' or 'PEMS08' or 'PEMS07' or 'PEMS03':
     adj_mx = get_adjacency_matrix2(adj_filename, num_of_vertices, id_filename=id_filename)
 else:
     adj_mx = load_weighted_adjacency_matrix2(adj_filename, num_of_vertices)
-adj_TMD = load_weighted_adjacency_matrix(stag_filename, num_of_vertices)
-adj_pa = load_PA(strg_filename)
+adj_TMD = None
+adj_pa = None
 
 if graph_use =='G':
     adj_merge = adj_mx
