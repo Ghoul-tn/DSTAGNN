@@ -129,6 +129,14 @@ if adj_merge is None:
 net = make_model(DEVICE, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_merge,
                  adj_pa, adj_TMD, num_for_predict, len_input, num_of_vertices, d_model, d_k, d_v, n_heads)
 
+# Use DataParallel for multi-GPU training
+if torch.cuda.device_count() > 1:
+    print(f"Using {torch.cuda.device_count()} GPUs!")
+    net = nn.DataParallel(net)
+
+# Move the model to the device
+net = net.to(DEVICE)
+
 
 def train_main():
     if (start_epoch == 0) and (not os.path.exists(params_path)):
@@ -202,11 +210,15 @@ def train_main():
 
         for batch_index, batch_data in enumerate(train_loader):
             encoder_inputs, labels = batch_data
+            encoder_inputs = encoder_inputs.to(DEVICE)
+            labels = labels.to(DEVICE)
+
             optimizer.zero_grad()
             outputs = net(encoder_inputs)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
+
             training_loss = loss.item()
             global_step += 1
             sw.add_scalar('training_loss', training_loss, global_step)
