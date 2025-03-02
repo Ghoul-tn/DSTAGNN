@@ -11,38 +11,42 @@ import shutil
 import argparse
 import configparser
 from model.DSTAGNN_my import make_model
-from lib.dataloader import load_weighted_adjacency_matrix,load_weighted_adjacency_matrix2,load_PA
+from lib.dataloader import load_weighted_adjacency_matrix, load_weighted_adjacency_matrix2, load_PA
 from lib.utils1 import load_graphdata_channel1, get_adjacency_matrix2, compute_val_loss_mstgcn, predict_and_save_results_mstgcn
 from tensorboardX import SummaryWriter
 
 
 def seed_torch(seed):
     random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)  # 为了禁止hash随机化，使得实验可复现
+    os.environ['PYTHONHASHSEED'] = str(seed)  # To ensure reproducibility
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed) # if you are using multi-GPU.
+    torch.cuda.manual_seed_all(seed)  # If using multi-GPU
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+
 seed_torch(1)
 
-
+# Parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("--config", default='configurations/PEMS04_dstagnn.conf', type=str,
+parser.add_argument("--config", default='configurations/Gambia.conf', type=str,
                     help="configuration file path")
 args = parser.parse_args()
+
+# Read configuration file
 config = configparser.ConfigParser()
 print('Read configuration file: %s' % (args.config))
 config.read(args.config)
 data_config = config['Data']
 training_config = config['Training']
 
+# Data configuration
 adj_filename = data_config['adj_filename']
 graph_signal_matrix_filename = data_config['graph_signal_matrix_filename']
-stag_filename = data_config.get('stag_filename', None)
-strg_filename = data_config.get('strg_filename', None)
+stag_filename = data_config.get('stag_filename', None)  # Optional: STAG file
+strg_filename = data_config.get('strg_filename', None)  # Optional: STRG file
 if config.has_option('Data', 'id_filename'):
     id_filename = data_config['id_filename']
 else:
@@ -54,15 +58,18 @@ num_for_predict = int(data_config['num_for_predict'])
 len_input = int(data_config['len_input'])
 dataset_name = data_config['dataset_name']
 
+# Training configuration
 model_name = training_config['model_name']
-
 graph_use = training_config['graph']
 
 ctx = training_config['ctx']
-os.environ["CUDA_VISIBLE_DEVICES"] = ctx
-USE_CUDA = torch.cuda.is_available()
-DEVICE = torch.device('cuda:0')
-print("CUDA:", USE_CUDA, DEVICE)
+if ctx == 'cpu':
+    DEVICE = torch.device('cpu')
+else:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ctx
+    USE_CUDA = torch.cuda.is_available()
+    DEVICE = torch.device('cuda:0' if USE_CUDA else 'cpu')
+print("DEVICE:", DEVICE)
 
 learning_rate = float(training_config['learning_rate'])
 epochs = int(training_config['epochs'])
@@ -83,27 +90,42 @@ n_heads = int(training_config['n_heads'])
 d_k = int(training_config['d_k'])
 d_v = d_k
 
+# Create output directory
 folder_dir = '%s_h%dd%dw%d_channel%d_%e' % (model_name, num_of_hours, num_of_days, num_of_weeks, in_channels, learning_rate)
 print('folder_dir:', folder_dir)
 params_path = os.path.join('myexperiments', dataset_name, folder_dir)
 print('params_path:', params_path)
 
-
+# Load data
 _, train_loader, train_target_tensor, _, val_loader, val_target_tensor, _, test_loader, test_target_tensor, _mean, _std = load_graphdata_channel1(
     graph_signal_matrix_filename, num_of_hours,
     num_of_days, num_of_weeks, DEVICE, batch_size)
 
+# Load adjacency matrix
 if dataset_name == 'PEMS04' or 'PEMS08' or 'PEMS07' or 'PEMS03':
     adj_mx = get_adjacency_matrix2(adj_filename, num_of_vertices, id_filename=id_filename)
 else:
     adj_mx = load_weighted_adjacency_matrix2(adj_filename, num_of_vertices)
+
+# Load STAG and STRG (if provided)
 adj_TMD = None
 adj_pa = None
+if stag_filename is not None:
+    adj_TMD = load_weighted_adjacency_matrix(stag_filename, num_of_vertices)
+if strg_filename is not None:
+    adj_pa = load_PA(strg_filename)
 
-if graph_use =='G':
+# Set adj_merge based on graph_use
+if graph_use == 'G':
     adj_merge = adj_mx
 else:
     adj_merge = adj_TMD
+
+# Ensure adj_merge is not None
+if adj_merge is None:
+    raise ValueError("adj_merge cannot be None. Check the graph_use parameter and adjacency matrix files.")
+
+# Create the model
 net = make_model(DEVICE, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_merge,
                  adj_pa, adj_TMD, num_for_predict, len_input, num_of_vertices, d_model, d_k, d_v, n_heads)
 
@@ -135,7 +157,6 @@ def train_main():
 
     criterion = nn.SmoothL1Loss().to(DEVICE)
     optimizer = optim.Adam(net.parameters(), lr=learning_rate)
-    # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[20, 40], gamma=0.9)
     sw = SummaryWriter(logdir=params_path, flush_secs=5)
     print(net)
 
@@ -157,16 +178,12 @@ def train_main():
     start_time = time()
 
     if start_epoch > 0:
-
         params_filename = os.path.join(params_path, 'epoch_%s.params' % start_epoch)
-
         net.load_state_dict(torch.load(params_filename))
-
         print('start epoch:', start_epoch)
-
         print('load weight from: ', params_filename)
 
-    # train model
+    # Train model
     for epoch in range(start_epoch, epochs):
         print('current epoch: ', epoch)
         params_filename = os.path.join(params_path, 'epoch_%s.params' % epoch)
@@ -181,40 +198,29 @@ def train_main():
             print('best val loss: ', best_val_loss)
             print('save parameters to file: %s' % params_filename)
 
-        net.train()  # ensure dropout layers are in train mode
+        net.train()  # Ensure dropout layers are in train mode
 
         for batch_index, batch_data in enumerate(train_loader):
-
             encoder_inputs, labels = batch_data
-
             optimizer.zero_grad()
-
             outputs = net(encoder_inputs)
-
             loss = criterion(outputs, labels)
-
             loss.backward()
-
             optimizer.step()
-
             training_loss = loss.item()
-
             global_step += 1
-
             sw.add_scalar('training_loss', training_loss, global_step)
 
             if global_step % 1000 == 0:
-
                 print('global step: %s, training loss: %.2f, time: %.2fs' % (global_step, training_loss, time() - start_time))
 
     print('best epoch:', best_epoch)
-    # apply the best model on the test set
+    # Apply the best model on the test set
     predict_main(best_epoch, test_loader, test_target_tensor, _mean, _std, 'test')
 
 
 def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type):
     '''
-
     :param global_step: int
     :param data_loader: torch.utils.data.utils.DataLoader
     :param data_target_tensor: tensor
@@ -223,30 +229,12 @@ def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type
     :param type: string
     :return:
     '''
-
     params_filename = os.path.join(params_path, 'epoch_%s.params' % global_step)
     print('load weight from:', params_filename)
 
     net.load_state_dict(torch.load(params_filename))
-
     predict_and_save_results_mstgcn(net, data_loader, data_target_tensor, global_step, _mean, _std, params_path, type)
 
 
 if __name__ == "__main__":
-
     train_main()
-    # predict_main(18, test_loader, test_target_tensor, _mean, _std, 'test')
-
-
-
-
-
-
-
-
-
-
-
-
-
-
