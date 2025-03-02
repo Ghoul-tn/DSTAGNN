@@ -137,6 +137,9 @@ if torch.cuda.device_count() > 1:
 # Move the model to the device
 net = net.to(DEVICE)
 
+# Gradient accumulation steps
+accumulation_steps = 4  # Accumulate gradients over 4 steps
+
 
 def train_main():
     if (start_epoch == 0) and (not os.path.exists(params_path)):
@@ -208,18 +211,23 @@ def train_main():
 
         net.train()  # Ensure dropout layers are in train mode
 
+        optimizer.zero_grad()  # Reset gradients at the start of each epoch
+
         for batch_index, batch_data in enumerate(train_loader):
             encoder_inputs, labels = batch_data
             encoder_inputs = encoder_inputs.to(DEVICE)
             labels = labels.to(DEVICE)
 
-            optimizer.zero_grad()
             outputs = net(encoder_inputs)
             loss = criterion(outputs, labels)
+            loss = loss / accumulation_steps  # Normalize loss
             loss.backward()
-            optimizer.step()
 
-            training_loss = loss.item()
+            if (batch_index + 1) % accumulation_steps == 0:
+                optimizer.step()  # Update weights
+                optimizer.zero_grad()  # Reset gradients
+
+            training_loss = loss.item() * accumulation_steps  # Scale loss back
             global_step += 1
             sw.add_scalar('training_loss', training_loss, global_step)
 
