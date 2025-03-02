@@ -264,7 +264,6 @@ class GTU(nn.Module):
 
 
 class DSTAGNN_block(nn.Module):
-
     def __init__(self, DEVICE, num_of_d, in_channels, K, nb_chev_filter, nb_time_filter, time_strides,
                  cheb_polynomials, adj_pa, adj_TMD, num_of_vertices, num_of_timesteps, d_model, d_k, d_v, n_heads):
         super(DSTAGNN_block, self).__init__()
@@ -273,7 +272,11 @@ class DSTAGNN_block(nn.Module):
         self.tanh = nn.Tanh()
         self.relu = nn.ReLU(inplace=True)
 
-        self.adj_pa = torch.FloatTensor(adj_pa).cuda()
+        # Handle adj_pa being None
+        if adj_pa is not None:
+            self.adj_pa = torch.FloatTensor(adj_pa).to(DEVICE)
+        else:
+            self.adj_pa = torch.zeros((num_of_vertices, num_of_vertices)).to(DEVICE)  # Use a zero matrix as a placeholder
 
         self.pre_conv = nn.Conv2d(num_of_timesteps, d_model, kernel_size=(1, num_of_d))
 
@@ -409,7 +412,6 @@ def make_model(DEVICE, num_of_d, nb_block, in_channels, K,
                nb_chev_filter, nb_time_filter, time_strides, adj_mx, adj_pa,
                adj_TMD, num_for_predict, len_input, num_of_vertices, d_model, d_k, d_v, n_heads):
     '''
-
     :param DEVICE:
     :param nb_block:
     :param in_channels:
@@ -423,6 +425,11 @@ def make_model(DEVICE, num_of_d, nb_block, in_channels, K,
     '''
     L_tilde = scaled_Laplacian(adj_mx)
     cheb_polynomials = [torch.from_numpy(i).type(torch.FloatTensor).to(DEVICE) for i in cheb_polynomial(L_tilde, K)]
+
+    # Handle adj_pa being None
+    if adj_pa is None:
+        adj_pa = np.zeros((num_of_vertices, num_of_vertices))  # Use a zero matrix as a placeholder
+
     model = DSTAGNN_submodule(DEVICE, num_of_d, nb_block, in_channels,
                              K, nb_chev_filter, nb_time_filter, time_strides, cheb_polynomials,
                              adj_pa, adj_TMD, num_for_predict, len_input, num_of_vertices, d_model, d_k, d_v, n_heads)
