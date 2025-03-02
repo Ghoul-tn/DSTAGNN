@@ -110,9 +110,9 @@ else:
 # Load STAG and STRG (if provided)
 adj_TMD = None
 adj_pa = None
-if stag_filename is not None:
+if stag_filename is not None and stag_filename != 'None':
     adj_TMD = load_weighted_adjacency_matrix(stag_filename, num_of_vertices)
-if strg_filename is not None:
+if strg_filename is not None and strg_filename != 'None':
     adj_pa = load_PA(strg_filename)
 
 # Set adj_merge based on graph_use
