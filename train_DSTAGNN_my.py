@@ -14,6 +14,7 @@ from model.DSTAGNN_my import make_model
 from lib.dataloader import load_weighted_adjacency_matrix, load_weighted_adjacency_matrix2, load_PA
 from lib.utils1 import load_graphdata_channel1, get_adjacency_matrix2, compute_val_loss_mstgcn, predict_and_save_results_mstgcn
 from tensorboardX import SummaryWriter
+from torch.cuda.amp import GradScaler, autocast
 
 
 def seed_torch(seed):
@@ -138,7 +139,10 @@ if torch.cuda.device_count() > 1:
 net = net.to(DEVICE)
 
 # Gradient accumulation steps
-accumulation_steps = 4  # Accumulate gradients over 4 steps
+accumulation_steps = 8  # Increase gradient accumulation steps
+
+# Initialize gradient scaler for mixed precision
+scaler = GradScaler()
 
 
 def train_main():
@@ -218,13 +222,18 @@ def train_main():
             encoder_inputs = encoder_inputs.to(DEVICE)
             labels = labels.to(DEVICE)
 
-            outputs = net(encoder_inputs)
-            loss = criterion(outputs, labels)
-            loss = loss / accumulation_steps  # Normalize loss
-            loss.backward()
+            # Forward pass with mixed precision
+            with autocast():
+                outputs = net(encoder_inputs)
+                loss = criterion(outputs, labels)
+                loss = loss / accumulation_steps  # Normalize loss
+
+            # Backward pass with gradient scaling
+            scaler.scale(loss).backward()
 
             if (batch_index + 1) % accumulation_steps == 0:
-                optimizer.step()  # Update weights
+                scaler.step(optimizer)  # Update weights
+                scaler.update()  # Update the scale for next iteration
                 optimizer.zero_grad()  # Reset gradients
 
             training_loss = loss.item() * accumulation_steps  # Scale loss back
