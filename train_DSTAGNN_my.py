@@ -15,6 +15,12 @@ from lib.dataloader import load_weighted_adjacency_matrix, load_weighted_adjacen
 from lib.utils1 import load_graphdata_channel1, get_adjacency_matrix2, compute_val_loss_mstgcn, predict_and_save_results_mstgcn
 from tensorboardX import SummaryWriter
 from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import DataLoader
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
+from torch.utils.checkpoint import checkpoint_sequential
+import torch.distributed as dist
+import torch.multiprocessing as mp
 
 
 def seed_torch(seed):
@@ -28,163 +34,166 @@ def seed_torch(seed):
     torch.backends.cudnn.deterministic = True
 
 
-seed_torch(1)
-
-# Parse arguments
-parser = argparse.ArgumentParser()
-parser.add_argument("--config", default='configurations/Gambia.conf', type=str,
-                    help="configuration file path")
-args = parser.parse_args()
-
-# Read configuration file
-config = configparser.ConfigParser()
-print('Read configuration file: %s' % (args.config))
-config.read(args.config)
-data_config = config['Data']
-training_config = config['Training']
-
-# Data configuration
-adj_filename = data_config['adj_filename']
-graph_signal_matrix_filename = data_config['graph_signal_matrix_filename']
-stag_filename = data_config.get('stag_filename', None)  # Optional: STAG file
-strg_filename = data_config.get('strg_filename', None)  # Optional: STRG file
-if config.has_option('Data', 'id_filename'):
-    id_filename = data_config['id_filename']
-else:
-    id_filename = None
-
-num_of_vertices = int(data_config['num_of_vertices'])
-points_per_hour = int(data_config['points_per_hour'])
-num_for_predict = int(data_config['num_for_predict'])
-len_input = int(data_config['len_input'])
-dataset_name = data_config['dataset_name']
-
-# Training configuration
-model_name = training_config['model_name']
-graph_use = training_config['graph']
-
-ctx = training_config['ctx']
-if ctx == 'cpu':
-    DEVICE = torch.device('cpu')
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = ctx
-    USE_CUDA = torch.cuda.is_available()
-    DEVICE = torch.device('cuda:0' if USE_CUDA else 'cpu')
-print("DEVICE:", DEVICE)
-
-learning_rate = float(training_config['learning_rate'])
-epochs = int(training_config['epochs'])
-start_epoch = int(training_config['start_epoch'])
-batch_size = int(training_config['batch_size'])
-num_of_weeks = int(training_config['num_of_weeks'])
-num_of_days = int(training_config['num_of_days'])
-num_of_hours = int(training_config['num_of_hours'])
-time_strides = 1
-d_model = int(training_config['d_model'])
-nb_chev_filter = int(training_config['nb_chev_filter'])
-nb_time_filter = int(training_config['nb_time_filter'])
-in_channels = int(training_config['in_channels'])
-num_of_d = in_channels
-nb_block = int(training_config['nb_block'])
-K = int(training_config['K'])
-n_heads = int(training_config['n_heads'])
-d_k = int(training_config['d_k'])
-d_v = d_k
-
-# Create output directory
-folder_dir = '%s_h%dd%dw%d_channel%d_%e' % (model_name, num_of_hours, num_of_days, num_of_weeks, in_channels, learning_rate)
-print('folder_dir:', folder_dir)
-params_path = os.path.join('myexperiments', dataset_name, folder_dir)
-print('params_path:', params_path)
-
-# Load data
-_, train_loader, train_target_tensor, _, val_loader, val_target_tensor, _, test_loader, test_target_tensor, _mean, _std = load_graphdata_channel1(
-    graph_signal_matrix_filename, num_of_hours,
-    num_of_days, num_of_weeks, DEVICE, batch_size)
-
-# Load adjacency matrix
-if dataset_name == 'PEMS04' or 'PEMS08' or 'PEMS07' or 'PEMS03':
-    adj_mx = get_adjacency_matrix2(adj_filename, num_of_vertices, id_filename=id_filename)
-else:
-    adj_mx = load_weighted_adjacency_matrix2(adj_filename, num_of_vertices)
-
-# Load STAG and STRG (if provided)
-adj_TMD = None
-adj_pa = None
-if stag_filename is not None and stag_filename != 'None':
-    adj_TMD = load_weighted_adjacency_matrix(stag_filename, num_of_vertices)
-if strg_filename is not None and strg_filename != 'None':
-    adj_pa = load_PA(strg_filename)
-
-# Set adj_merge based on graph_use
-if graph_use == 'G':
-    adj_merge = adj_mx
-else:
-    adj_merge = adj_TMD
-
-# Ensure adj_merge is not None
-if adj_merge is None:
-    raise ValueError("adj_merge cannot be None. Check the graph_use parameter and adjacency matrix files.")
-
-# Create the model
-net = make_model(DEVICE, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_merge,
-                 adj_pa, adj_TMD, num_for_predict, len_input, num_of_vertices, d_model, d_k, d_v, n_heads)
-
-# Use DataParallel for multi-GPU training
-if torch.cuda.device_count() > 1:
-    print(f"Using {torch.cuda.device_count()} GPUs!")
-    net = nn.DataParallel(net)
-
-# Move the model to the device
-net = net.to(DEVICE)
-
-# Gradient accumulation steps
-accumulation_steps = 8  # Increase gradient accumulation steps
-
-# Initialize gradient scaler for mixed precision
-scaler = GradScaler()
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 
-def train_main():
-    if (start_epoch == 0) and (not os.path.exists(params_path)):
-        os.makedirs(params_path)
-        print('create params directory %s' % (params_path))
-    elif (start_epoch == 0) and (os.path.exists(params_path)):
-        shutil.rmtree(params_path)
-        os.makedirs(params_path)
-        print('delete the old one and create params directory %s' % (params_path))
-    elif (start_epoch > 0) and (os.path.exists(params_path)):
-        print('train from params directory %s' % (params_path))
+def cleanup():
+    dist.destroy_process_group()
+
+
+def train_main(rank, world_size, args):
+    setup(rank, world_size)
+
+    # Read configuration file
+    config = configparser.ConfigParser()
+    print('Read configuration file: %s' % (args.config))
+    config.read(args.config)
+    data_config = config['Data']
+    training_config = config['Training']
+
+    # Data configuration
+    adj_filename = data_config['adj_filename']
+    graph_signal_matrix_filename = data_config['graph_signal_matrix_filename']
+    stag_filename = data_config.get('stag_filename', None)  # Optional: STAG file
+    strg_filename = data_config.get('strg_filename', None)  # Optional: STRG file
+    if config.has_option('Data', 'id_filename'):
+        id_filename = data_config['id_filename']
     else:
-        raise SystemExit('Wrong type of model!')
+        id_filename = None
 
-    print('param list:')
-    print('CUDA\t', DEVICE)
-    print('in_channels\t', in_channels)
-    print('nb_block\t', nb_block)
-    print('nb_chev_filter\t', nb_chev_filter)
-    print('nb_time_filter\t', nb_time_filter)
-    print('time_strides\t', time_strides)
-    print('batch_size\t', batch_size)
-    print('graph_signal_matrix_filename\t', graph_signal_matrix_filename)
-    print('start_epoch\t', start_epoch)
-    print('epochs\t', epochs)
+    num_of_vertices = int(data_config['num_of_vertices'])
+    points_per_hour = int(data_config['points_per_hour'])
+    num_for_predict = int(data_config['num_for_predict'])
+    len_input = int(data_config['len_input'])
+    dataset_name = data_config['dataset_name']
+
+    # Training configuration
+    model_name = training_config['model_name']
+    graph_use = training_config['graph']
+
+    ctx = training_config['ctx']
+    if ctx == 'cpu':
+        DEVICE = torch.device('cpu')
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ctx
+        USE_CUDA = torch.cuda.is_available()
+        DEVICE = torch.device(f'cuda:{rank}' if USE_CUDA else 'cpu')
+    print("DEVICE:", DEVICE)
+
+    learning_rate = float(training_config['learning_rate'])
+    epochs = int(training_config['epochs'])
+    start_epoch = int(training_config['start_epoch'])
+    batch_size = int(training_config['batch_size'])
+    num_of_weeks = int(training_config['num_of_weeks'])
+    num_of_days = int(training_config['num_of_days'])
+    num_of_hours = int(training_config['num_of_hours'])
+    time_strides = 1
+    d_model = int(training_config['d_model'])
+    nb_chev_filter = int(training_config['nb_chev_filter'])
+    nb_time_filter = int(training_config['nb_time_filter'])
+    in_channels = int(training_config['in_channels'])
+    num_of_d = in_channels
+    nb_block = int(training_config['nb_block'])
+    K = int(training_config['K'])
+    n_heads = int(training_config['n_heads'])
+    d_k = int(training_config['d_k'])
+    d_v = d_k
+
+    # Create output directory
+    folder_dir = '%s_h%dd%dw%d_channel%d_%e' % (model_name, num_of_hours, num_of_days, num_of_weeks, in_channels, learning_rate)
+    print('folder_dir:', folder_dir)
+    params_path = os.path.join('myexperiments', dataset_name, folder_dir)
+    print('params_path:', params_path)
+
+    # Load data
+    _, train_loader, train_target_tensor, _, val_loader, val_target_tensor, _, test_loader, test_target_tensor, _mean, _std = load_graphdata_channel1(
+        graph_signal_matrix_filename, num_of_hours,
+        num_of_days, num_of_weeks, DEVICE, batch_size)
+
+    # Load adjacency matrix
+    if dataset_name == 'PEMS04' or 'PEMS08' or 'PEMS07' or 'PEMS03':
+        adj_mx = get_adjacency_matrix2(adj_filename, num_of_vertices, id_filename=id_filename)
+    else:
+        adj_mx = load_weighted_adjacency_matrix2(adj_filename, num_of_vertices)
+
+    # Load STAG and STRG (if provided)
+    adj_TMD = None
+    adj_pa = None
+    if stag_filename is not None and stag_filename != 'None':
+        adj_TMD = load_weighted_adjacency_matrix(stag_filename, num_of_vertices)
+    if strg_filename is not None and strg_filename != 'None':
+        adj_pa = load_PA(strg_filename)
+
+    # Set adj_merge based on graph_use
+    if graph_use == 'G':
+        adj_merge = adj_mx
+    else:
+        adj_merge = adj_TMD
+
+    # Ensure adj_merge is not None
+    if adj_merge is None:
+        raise ValueError("adj_merge cannot be None. Check the graph_use parameter and adjacency matrix files.")
+
+    # Create the model
+    net = make_model(DEVICE, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_merge,
+                     adj_pa, adj_TMD, num_for_predict, len_input, num_of_vertices, d_model, d_k, d_v, n_heads)
+
+    # Use Distributed Data Parallel (DDP)
+    net = DDP(net, device_ids=[rank])
+
+    # Move the model to the device
+    net = net.to(DEVICE)
+
+    # Gradient accumulation steps
+    accumulation_steps = 8  # Increase gradient accumulation steps
+
+    # Initialize gradient scaler for mixed precision
+    scaler = GradScaler()
+
+    if rank == 0:
+        if (start_epoch == 0) and (not os.path.exists(params_path)):
+            os.makedirs(params_path)
+            print('create params directory %s' % (params_path))
+        elif (start_epoch == 0) and (os.path.exists(params_path)):
+            shutil.rmtree(params_path)
+            os.makedirs(params_path)
+            print('delete the old one and create params directory %s' % (params_path))
+        elif (start_epoch > 0) and (os.path.exists(params_path)):
+            print('train from params directory %s' % (params_path))
+        else:
+            raise SystemExit('Wrong type of model!')
+
+        print('param list:')
+        print('CUDA\t', DEVICE)
+        print('in_channels\t', in_channels)
+        print('nb_block\t', nb_block)
+        print('nb_chev_filter\t', nb_chev_filter)
+        print('nb_time_filter\t', nb_time_filter)
+        print('time_strides\t', time_strides)
+        print('batch_size\t', batch_size)
+        print('graph_signal_matrix_filename\t', graph_signal_matrix_filename)
+        print('start_epoch\t', start_epoch)
+        print('epochs\t', epochs)
 
     criterion = nn.SmoothL1Loss().to(DEVICE)
     optimizer = optim.Adam(net.parameters(), lr=learning_rate)
-    sw = SummaryWriter(logdir=params_path, flush_secs=5)
-    print(net)
+    if rank == 0:
+        sw = SummaryWriter(logdir=params_path, flush_secs=5)
+        print(net)
 
-    print('Net\'s state_dict:')
-    total_param = 0
-    for param_tensor in net.state_dict():
-        print(param_tensor, '\t', net.state_dict()[param_tensor].size())
-        total_param += np.prod(net.state_dict()[param_tensor].size())
-    print('Net\'s total params:', total_param)
+        print('Net\'s state_dict:')
+        total_param = 0
+        for param_tensor in net.state_dict():
+            print(param_tensor, '\t', net.state_dict()[param_tensor].size())
+            total_param += np.prod(net.state_dict()[param_tensor].size())
+        print('Net\'s total params:', total_param)
 
-    print('Optimizer\'s state_dict:')
-    for var_name in optimizer.state_dict():
-        print(var_name, '\t', optimizer.state_dict()[var_name])
+        print('Optimizer\'s state_dict:')
+        for var_name in optimizer.state_dict():
+            print(var_name, '\t', optimizer.state_dict()[var_name])
 
     global_step = 0
     best_epoch = 0
@@ -200,18 +209,21 @@ def train_main():
 
     # Train model
     for epoch in range(start_epoch, epochs):
-        print('current epoch: ', epoch)
+        if rank == 0:
+            print('current epoch: ', epoch)
         params_filename = os.path.join(params_path, 'epoch_%s.params' % epoch)
 
         val_loss = compute_val_loss_mstgcn(net, val_loader, criterion, sw, epoch)
-        print('val loss', val_loss)
+        if rank == 0:
+            print('val loss', val_loss)
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_epoch = epoch
-            torch.save(net.state_dict(), params_filename)
-            print('best epoch: ', best_epoch)
-            print('best val loss: ', best_val_loss)
-            print('save parameters to file: %s' % params_filename)
+            if rank == 0:
+                torch.save(net.state_dict(), params_filename)
+                print('best epoch: ', best_epoch)
+                print('best val loss: ', best_val_loss)
+                print('save parameters to file: %s' % params_filename)
 
         net.train()  # Ensure dropout layers are in train mode
 
@@ -238,14 +250,18 @@ def train_main():
 
             training_loss = loss.item() * accumulation_steps  # Scale loss back
             global_step += 1
-            sw.add_scalar('training_loss', training_loss, global_step)
+            if rank == 0:
+                sw.add_scalar('training_loss', training_loss, global_step)
 
-            if global_step % 1000 == 0:
+            if global_step % 1000 == 0 and rank == 0:
                 print('global step: %s, training loss: %.2f, time: %.2fs' % (global_step, training_loss, time() - start_time))
 
-    print('best epoch:', best_epoch)
-    # Apply the best model on the test set
-    predict_main(best_epoch, test_loader, test_target_tensor, _mean, _std, 'test')
+    if rank == 0:
+        print('best epoch:', best_epoch)
+        # Apply the best model on the test set
+        predict_main(best_epoch, test_loader, test_target_tensor, _mean, _std, 'test')
+
+    cleanup()
 
 
 def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type):
@@ -266,4 +282,10 @@ def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type
 
 
 if __name__ == "__main__":
-    train_main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default='configurations/Gambia.conf', type=str,
+                        help="configuration file path")
+    args = parser.parse_args()
+
+    world_size = torch.cuda.device_count()
+    mp.spawn(train_main, args=(world_size, args), nprocs=world_size, join=True)
