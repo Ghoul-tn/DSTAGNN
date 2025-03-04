@@ -12,13 +12,12 @@ import argparse
 import configparser
 from model.DSTAGNN_my import make_model
 from lib.dataloader import load_weighted_adjacency_matrix, load_weighted_adjacency_matrix2, load_PA
-from lib.utils1 import load_graphdata_channel1, get_adjacency_matrix2, compute_val_loss_mstgcn, predict_and_save_results_mstgcn
+from lib.utils1 import get_adjacency_matrix2, compute_val_loss_mstgcn, predict_and_save_results_mstgcn
 from tensorboardX import SummaryWriter
 from torch.cuda.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 import torch.distributed as dist
-from torch.profiler import profile, record_function, ProfilerActivity
 
 
 def seed_torch(seed):
@@ -42,6 +41,68 @@ def cleanup():
     dist.destroy_process_group()
 
 
+class ChunkedDataset(Dataset):
+    def __init__(self, data_file, chunk_size, num_nodes, num_features, num_timesteps, mode='train'):
+        self.data_file = data_file
+        self.chunk_size = chunk_size
+        self.num_nodes = num_nodes
+        self.num_features = num_features
+        self.num_timesteps = num_timesteps
+        self.mode = mode
+
+        # Load metadata (e.g., mean and std)
+        with np.load(data_file) as data:
+            self.mean = data['mean']
+            self.std = data['std']
+
+    def __len__(self):
+        return self.num_timesteps // self.chunk_size
+
+    def __getitem__(self, idx):
+        # Load a chunk of data
+        start_idx = idx * self.chunk_size
+        end_idx = start_idx + self.chunk_size
+
+        with np.load(self.data_file) as data:
+            if self.mode == 'train':
+                x = data['train_x'][start_idx:end_idx]  # Shape: (chunk_size, num_nodes, num_features, 1)
+                y = data['train_target'][start_idx:end_idx]  # Shape: (chunk_size, num_nodes)
+            elif self.mode == 'val':
+                x = data['val_x'][start_idx:end_idx]
+                y = data['val_target'][start_idx:end_idx]
+            elif self.mode == 'test':
+                x = data['test_x'][start_idx:end_idx]
+                y = data['test_target'][start_idx:end_idx]
+
+        # Normalize the data
+        x = (x - self.mean) / self.std
+
+        # Convert to PyTorch tensors
+        x = torch.FloatTensor(x)
+        y = torch.FloatTensor(y)
+
+        return x, y
+
+
+def load_graphdata_channel1(data_file, num_hours, num_days, num_weeks, device, batch_size, chunk_size):
+    # Load metadata (e.g., mean and std)
+    with np.load(data_file) as data:
+        mean = data['mean']
+        std = data['std']
+
+    # Create datasets
+    train_dataset = ChunkedDataset(data_file, chunk_size, num_of_vertices, in_channels, num_timesteps, mode='train')
+    val_dataset = ChunkedDataset(data_file, chunk_size, num_of_vertices, in_channels, num_timesteps, mode='val')
+    test_dataset = ChunkedDataset(data_file, chunk_size, num_of_vertices, in_channels, num_timesteps, mode='test')
+
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+    return train_loader, val_loader, test_loader, mean, std
+
+
 def train_main(rank, world_size, args):
     setup(rank, world_size)
 
@@ -55,18 +116,12 @@ def train_main(rank, world_size, args):
     # Data configuration
     adj_filename = data_config['adj_filename']
     graph_signal_matrix_filename = data_config['graph_signal_matrix_filename']
-    stag_filename = data_config.get('stag_filename', None)  # Optional: STAG file
-    strg_filename = data_config.get('strg_filename', None)  # Optional: STRG file
-    if config.has_option('Data', 'id_filename'):
-        id_filename = data_config['id_filename']
-    else:
-        id_filename = None
-
     num_of_vertices = int(data_config['num_of_vertices'])
     points_per_hour = int(data_config['points_per_hour'])
     num_for_predict = int(data_config['num_for_predict'])
     len_input = int(data_config['len_input'])
     dataset_name = data_config['dataset_name']
+    chunk_size = int(data_config.get('chunk_size', 1000))  # Default chunk size: 1000
 
     # Training configuration
     model_name = training_config['model_name']
@@ -97,48 +152,19 @@ def train_main(rank, world_size, args):
     params_path = os.path.join('myexperiments', dataset_name, folder_dir)
     print('params_path:', params_path)
 
-    # Load data
-    _, train_data, train_target, _, val_data, val_target, _, test_data, test_target, _mean, _std = load_graphdata_channel1(
-        graph_signal_matrix_filename, num_of_hours,
-        num_of_days, num_of_weeks, rank, batch_size)
-
-    # Create distributed samplers
-    train_sampler = DistributedSampler(train_data, num_replicas=world_size, rank=rank)
-    val_sampler = DistributedSampler(val_data, num_replicas=world_size, rank=rank)
-    test_sampler = DistributedSampler(test_data, num_replicas=world_size, rank=rank)
-
-    # Create data loaders
-    train_loader = DataLoader(train_data, batch_size=batch_size, sampler=train_sampler, pin_memory=True)
-    val_loader = DataLoader(val_data, batch_size=batch_size, sampler=val_sampler, pin_memory=True)
-    test_loader = DataLoader(test_data, batch_size=batch_size, sampler=test_sampler, pin_memory=True)
+    # Load data in chunks
+    train_loader, val_loader, test_loader, mean, std = load_graphdata_channel1(
+        graph_signal_matrix_filename, num_of_hours, num_of_days, num_of_weeks, rank, batch_size, chunk_size)
 
     # Load adjacency matrix
     if dataset_name == 'PEMS04' or 'PEMS08' or 'PEMS07' or 'PEMS03':
-        adj_mx = get_adjacency_matrix2(adj_filename, num_of_vertices, id_filename=id_filename)
+        adj_mx = get_adjacency_matrix2(adj_filename, num_of_vertices)
     else:
         adj_mx = load_weighted_adjacency_matrix2(adj_filename, num_of_vertices)
 
-    # Load STAG and STRG (if provided)
-    adj_TMD = None
-    adj_pa = None
-    if stag_filename is not None and stag_filename != 'None':
-        adj_TMD = load_weighted_adjacency_matrix(stag_filename, num_of_vertices)
-    if strg_filename is not None and strg_filename != 'None':
-        adj_pa = load_PA(strg_filename)
-
-    # Set adj_merge based on graph_use
-    if graph_use == 'G':
-        adj_merge = adj_mx
-    else:
-        adj_merge = adj_TMD
-
-    # Ensure adj_merge is not None
-    if adj_merge is None:
-        raise ValueError("adj_merge cannot be None. Check the graph_use parameter and adjacency matrix files.")
-
     # Create the model
-    net = make_model(rank, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_merge,
-                     adj_pa, adj_TMD, num_for_predict, len_input, num_of_vertices, d_model, d_k, d_v, n_heads)
+    net = make_model(rank, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_mx,
+                     None, None, num_for_predict, len_input, num_of_vertices, d_model, d_k, d_v, n_heads)
 
     # Wrap the model with DDP
     net = DDP(net, device_ids=[rank])
