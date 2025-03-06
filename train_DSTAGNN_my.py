@@ -85,23 +85,39 @@ class ChunkedDataset(Dataset):
 
 
 def load_graphdata_channel1(data_file, num_hours, num_days, num_weeks, device, batch_size, chunk_size):
-    # Load metadata (e.g., mean and std)
-    with np.load(data_file) as data:
-        mean = data['mean']
-        std = data['std']
+    # Load the .npz file
+    data = np.load(data_file)
 
-    # Create datasets
-    train_dataset = ChunkedDataset(data_file, chunk_size, num_of_vertices, in_channels, num_timesteps, mode='train')
-    val_dataset = ChunkedDataset(data_file, chunk_size, num_of_vertices, in_channels, num_timesteps, mode='val')
-    test_dataset = ChunkedDataset(data_file, chunk_size, num_of_vertices, in_channels, num_timesteps, mode='test')
+    # Extract the required arrays
+    train_x = data['train_x']  # Shape: (num_samples, num_nodes, num_features, num_timesteps)
+    train_target = data['train_target']  # Shape: (num_samples, num_nodes)
+    val_x = data['val_x']  # Shape: (num_samples, num_nodes, num_features, num_timesteps)
+    val_target = data['val_target']  # Shape: (num_samples, num_nodes)
+    test_x = data['test_x']  # Shape: (num_samples, num_nodes, num_features, num_timesteps)
+    test_target = data['test_target']  # Shape: (num_samples, num_nodes)
+    mean = data['mean']  # Shape: (1, 1, num_features, 1)
+    std = data['std']  # Shape: (1, 1, num_features, 1)
+
+    # Convert to PyTorch tensors and move to the specified device
+    train_x = torch.FloatTensor(train_x).to(device)
+    train_target = torch.FloatTensor(train_target).to(device)
+    val_x = torch.FloatTensor(val_x).to(device)
+    val_target = torch.FloatTensor(val_target).to(device)
+    test_x = torch.FloatTensor(test_x).to(device)
+    test_target = torch.FloatTensor(test_target).to(device)
+    mean = torch.FloatTensor(mean).to(device)
+    std = torch.FloatTensor(std).to(device)
 
     # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    train_dataset = torch.utils.data.TensorDataset(train_x, train_target)
+    val_dataset = torch.utils.data.TensorDataset(val_x, val_target)
+    test_dataset = torch.utils.data.TensorDataset(test_x, test_target)
+
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, test_loader, mean, std
-
 
 def train_main(rank, world_size, args):
     setup(rank, world_size)
@@ -227,7 +243,6 @@ def train_main(rank, world_size, args):
     predict_main(best_epoch, test_loader, test_target, _mean, _std, 'test', rank)
 
     cleanup()
-
 
 def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type, rank):
     '''
