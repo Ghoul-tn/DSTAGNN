@@ -278,6 +278,7 @@ class DSTAGNN_block(nn.Module):
         else:
             self.adj_pa = torch.zeros((num_of_vertices, num_of_vertices)).to(DEVICE)  # Use a zero matrix as a placeholder
 
+        # Update pre_conv to match the expected input channels
         self.pre_conv = nn.Conv2d(num_of_timesteps, d_model, kernel_size=(1, num_of_d))
 
         self.EmbedT = Embedding(num_of_timesteps, num_of_vertices, num_of_d, 'T')
@@ -309,26 +310,30 @@ class DSTAGNN_block(nn.Module):
         :param res_att: (Batch_size, N, F_in, T)
         :return: (Batch_size, N, nb_time_filter, T)
         '''
-        batch_size, num_of_vertices, num_of_features, num_of_timesteps = x.shape  # B,N,F,T
+        batch_size, num_of_vertices, num_of_features, num_of_timesteps = x.shape
 
         # TAT
         if num_of_features == 1:
             TEmx = self.EmbedT(x, batch_size)  # B,F,T,N
         else:
-            TEmx = x.permute(0, 2, 3, 1)
-        TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
+            TEmx = x.permute(0, 2, 3, 1)  # B,F,T,N
 
-        x_TAt = self.pre_conv(TATout.permute(0, 2, 3, 1))[:, :, :, -1].permute(0, 2, 1)  # B,N,d_model
+        # Ensure TATout has the correct shape for pre_conv
+        TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
+        TATout = TATout.permute(0, 3, 1, 2)  # B,N,F,T
+
+        # Apply pre_conv
+        x_TAt = self.pre_conv(TATout)[:, :, :, -1].permute(0, 2, 1)  # B,N,d_model
 
         # SAt
         SEmx_TAt = self.EmbedS(x_TAt, batch_size)  # B,N,d_model
-        SEmx_TAt = self.dropout(SEmx_TAt)   # B,N,d_model
+        SEmx_TAt = self.dropout(SEmx_TAt)  # B,N,d_model
         STAt = self.SAt(SEmx_TAt, SEmx_TAt, None)  # B,Hs,N,N
 
-        # graph convolution in spatial dim
+        # Graph convolution in spatial dim
         spatial_gcn = self.cheb_conv_SAt(x, STAt, self.adj_pa)  # B,N,F,T
 
-        # convolution along the time axis
+        # Convolution along the time axis
         X = spatial_gcn.permute(0, 2, 1, 3)  # B,F,N,T
         x_gtu = []
         x_gtu.append(self.gtu3(X))  # B,F,N,T-2
@@ -342,7 +347,7 @@ class DSTAGNN_block(nn.Module):
         else:
             time_conv_output = self.relu(X + time_conv)  # B,F,N,T
 
-        # residual shortcut
+        # Residual shortcut
         if num_of_features == 1:
             x_residual = self.residual_conv(x.permute(0, 2, 1, 3))
         else:
