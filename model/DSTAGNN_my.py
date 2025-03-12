@@ -320,6 +320,8 @@ class DSTAGNN_block(nn.Module):
 
         # Ensure TATout has the correct shape for pre_conv
         TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
+
+        # Permute TATout to match the expected input shape for pre_conv
         TATout = TATout.permute(0, 3, 1, 2)  # B,T,F,N
 
         # Apply pre_conv
