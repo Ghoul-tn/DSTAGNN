@@ -162,11 +162,17 @@ def train_main(rank, world_size, args):
     d_k = int(training_config['d_k'])
     d_v = d_k
 
-    # Create output directory
+    # Create output directory (only on rank 0)
     folder_dir = '%s_h%dd%dw%d_channel%d_%e' % (model_name, num_of_hours, num_of_days, num_of_weeks, in_channels, learning_rate)
     print('folder_dir:', folder_dir)
     params_path = os.path.join('myexperiments', dataset_name, folder_dir)
     print('params_path:', params_path)
+
+    if rank == 0:  # Only rank 0 creates the directory
+        os.makedirs(params_path, exist_ok=True)  # Create directory if it doesn't exist
+
+    # Ensure all processes wait for rank 0 to create the directory
+    dist.barrier()
 
     # Load data in chunks
     train_loader, val_loader, test_loader, mean, std = load_graphdata_channel1(
@@ -188,10 +194,15 @@ def train_main(rank, world_size, args):
     # Use mixed precision training
     scaler = GradScaler()
 
+    # Initialize SummaryWriter (only on rank 0)
+    if rank == 0:
+        sw = SummaryWriter(logdir=params_path, flush_secs=5)
+    else:
+        sw = None
+
     # Train the model
     criterion = nn.SmoothL1Loss().to(rank)
     optimizer = optim.Adam(net.parameters(), lr=learning_rate)
-    sw = SummaryWriter(logdir=params_path, flush_secs=5)
 
     global_step = 0
     best_epoch = 0
@@ -206,10 +217,11 @@ def train_main(rank, world_size, args):
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_epoch = epoch
-            torch.save(net.state_dict(), params_filename)
-            print('best epoch: ', best_epoch)
-            print('best val loss: ', best_val_loss)
-            print('save parameters to file: %s' % params_filename)
+            if rank == 0:  # Only rank 0 saves the model
+                torch.save(net.state_dict(), params_filename)
+                print('best epoch: ', best_epoch)
+                print('best val loss: ', best_val_loss)
+                print('save parameters to file: %s' % params_filename)
 
         net.train()  # Ensure dropout layers are in train mode
 
@@ -233,17 +245,19 @@ def train_main(rank, world_size, args):
 
             training_loss = loss.item()
             global_step += 1
-            sw.add_scalar('training_loss', training_loss, global_step)
+            if rank == 0:  # Only rank 0 logs the training loss
+                sw.add_scalar('training_loss', training_loss, global_step)
 
-            if global_step % 1000 == 0:
+            if global_step % 1000 == 0 and rank == 0:
                 print('global step: %s, training loss: %.2f, time: %.2fs' % (global_step, training_loss, time() - start_time))
 
     print('best epoch:', best_epoch)
     # Apply the best model on the test set
-    predict_main(best_epoch, test_loader, test_target, _mean, _std, 'test', rank)
+    if rank == 0:
+        predict_main(best_epoch, test_loader, test_target, _mean, _std, 'test', rank)
 
     cleanup()
-
+    
 def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type, rank):
     '''
     :param global_step: int
