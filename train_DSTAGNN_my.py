@@ -98,21 +98,22 @@ def load_graphdata_channel1(data_file, num_hours, num_days, num_weeks, device, b
     mean = data['mean']  # Shape: (1, 1, num_features, 1)
     std = data['std']  # Shape: (1, 1, num_features, 1)
 
-    # Convert to PyTorch tensors and move to the specified device
-    train_x = torch.FloatTensor(train_x).to(device)
-    train_target = torch.FloatTensor(train_target).to(device)
-    val_x = torch.FloatTensor(val_x).to(device)
-    val_target = torch.FloatTensor(val_target).to(device)
-    test_x = torch.FloatTensor(test_x).to(device)
-    test_target = torch.FloatTensor(test_target).to(device)
-    mean = torch.FloatTensor(mean).to(device)
-    std = torch.FloatTensor(std).to(device)
+    # Convert to PyTorch tensors (keep on CPU for now)
+    train_x = torch.FloatTensor(train_x)  # Keep on CPU
+    train_target = torch.FloatTensor(train_target)  # Keep on CPU
+    val_x = torch.FloatTensor(val_x)  # Keep on CPU
+    val_target = torch.FloatTensor(val_target)  # Keep on CPU
+    test_x = torch.FloatTensor(test_x)  # Keep on CPU
+    test_target = torch.FloatTensor(test_target)  # Keep on CPU
+    mean = torch.FloatTensor(mean).to(device)  # Move mean and std to GPU
+    std = torch.FloatTensor(std).to(device)  # Move mean and std to GPU
 
     # Create data loaders
     train_dataset = torch.utils.data.TensorDataset(train_x, train_target)
     val_dataset = torch.utils.data.TensorDataset(val_x, val_target)
     test_dataset = torch.utils.data.TensorDataset(test_x, test_target)
 
+    # Use pin_memory=True only for CPU tensors
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=4)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=4)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=4)
@@ -227,27 +228,27 @@ def train_main(rank, world_size, args):
 
         for batch_index, batch_data in enumerate(train_loader):
             encoder_inputs, labels = batch_data
-            encoder_inputs = encoder_inputs.to(rank, non_blocking=True)
-            labels = labels.to(rank, non_blocking=True)
-
+            encoder_inputs = encoder_inputs.to(device, non_blocking=True)  # Move to GPU
+            labels = labels.to(device, non_blocking=True)  # Move to GPU
+        
             # Forward pass with mixed precision
             with autocast():
                 outputs = net(encoder_inputs)
                 loss = criterion(outputs, labels)
-
+        
             # Backward pass with gradient scaling
             scaler.scale(loss).backward()
-
+        
             if (batch_index + 1) % 8 == 0:  # Gradient accumulation
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
-
+        
             training_loss = loss.item()
             global_step += 1
             if rank == 0:  # Only rank 0 logs the training loss
                 sw.add_scalar('training_loss', training_loss, global_step)
-
+        
             if global_step % 1000 == 0 and rank == 0:
                 print('global step: %s, training loss: %.2f, time: %.2fs' % (global_step, training_loss, time() - start_time))
 
