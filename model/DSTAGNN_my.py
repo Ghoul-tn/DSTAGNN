@@ -302,60 +302,60 @@ class DSTAGNN_block(nn.Module):
         )
         self.ln = nn.LayerNorm(nb_time_filter)
 
-def forward(self, x, res_att):
-    '''
-    :param x: (Batch_size, N, F_in, T)
-    :param res_att: (Batch_size, N, F_in, T)
-    :return: (Batch_size, N, nb_time_filter, T)
-    '''
-    batch_size, num_of_vertices, num_of_features, num_of_timesteps = x.shape
-
-    # TAT
-    if num_of_features == 1:
-        TEmx = self.EmbedT(x, batch_size)  # B,F,T,N
-    else:
-        TEmx = x.permute(0, 2, 3, 1)  # B,F,T,N
-
-    # Ensure TATout has the correct shape for pre_conv
-    TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
-
-    # Permute TATout to match the expected input shape for pre_conv
-    TATout = TATout.permute(0, 3, 1, 2)  # B,T,F,N
-
-    # Apply pre_conv
-    x_TAt = self.pre_conv(TATout)  # Apply convolution
-    x_TAt = x_TAt[:, :, :, -1].permute(0, 2, 1)  # B,N,d_model
-
-    # SAt
-    SEmx_TAt = self.EmbedS(x_TAt, batch_size)  # B,N,d_model
-    SEmx_TAt = self.dropout(SEmx_TAt)  # B,N,d_model
-    STAt = self.SAt(SEmx_TAt, SEmx_TAt, None)  # B,Hs,N,N
-
-    # Graph convolution in spatial dim
-    spatial_gcn = self.cheb_conv_SAt(x, STAt, self.adj_pa)  # B,N,F,T
-
-    # Convolution along the time axis
-    X = spatial_gcn.permute(0, 2, 1, 3)  # B,F,N,T
-    x_gtu = []
-    x_gtu.append(self.gtu3(X))  # B,F,N,T-2
-    x_gtu.append(self.gtu5(X))  # B,F,N,T-4
-    x_gtu.append(self.gtu7(X))  # B,F,N,T-6
-    time_conv = torch.cat(x_gtu, dim=-1)  # B,F,N,3T-12
-    time_conv = self.fcmy(time_conv)
-
-    if num_of_features == 1:
-        time_conv_output = self.relu(time_conv)
-    else:
-        time_conv_output = self.relu(X + time_conv)  # B,F,N,T
-
-    # Residual shortcut
-    if num_of_features == 1:
-        x_residual = self.residual_conv(x.permute(0, 2, 1, 3))
-    else:
-        x_residual = x.permute(0, 2, 1, 3)
-    x_residual = self.ln(F.relu(x_residual + time_conv_output).permute(0, 3, 2, 1)).permute(0, 2, 3, 1)
-
-    return x_residual, re_At
+    def forward(self, x, res_att):
+        '''
+        :param x: (Batch_size, N, F_in, T)
+        :param res_att: (Batch_size, N, F_in, T)
+        :return: (Batch_size, N, nb_time_filter, T)
+        '''
+        batch_size, num_of_vertices, num_of_features, num_of_timesteps = x.shape
+    
+        # TAT
+        if num_of_features == 1:
+            TEmx = self.EmbedT(x, batch_size)  # B,F,T,N
+        else:
+            TEmx = x.permute(0, 2, 3, 1)  # B,F,T,N
+    
+        # Ensure TATout has the correct shape for pre_conv
+        TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
+    
+        # Permute TATout to match the expected input shape for pre_conv
+        TATout = TATout.permute(0, 3, 1, 2)  # B,T,F,N
+    
+        # Apply pre_conv
+        x_TAt = self.pre_conv(TATout)  # Apply convolution
+        x_TAt = x_TAt[:, :, :, -1].permute(0, 2, 1)  # B,N,d_model
+    
+        # SAt
+        SEmx_TAt = self.EmbedS(x_TAt, batch_size)  # B,N,d_model
+        SEmx_TAt = self.dropout(SEmx_TAt)  # B,N,d_model
+        STAt = self.SAt(SEmx_TAt, SEmx_TAt, None)  # B,Hs,N,N
+    
+        # Graph convolution in spatial dim
+        spatial_gcn = self.cheb_conv_SAt(x, STAt, self.adj_pa)  # B,N,F,T
+    
+        # Convolution along the time axis
+        X = spatial_gcn.permute(0, 2, 1, 3)  # B,F,N,T
+        x_gtu = []
+        x_gtu.append(self.gtu3(X))  # B,F,N,T-2
+        x_gtu.append(self.gtu5(X))  # B,F,N,T-4
+        x_gtu.append(self.gtu7(X))  # B,F,N,T-6
+        time_conv = torch.cat(x_gtu, dim=-1)  # B,F,N,3T-12
+        time_conv = self.fcmy(time_conv)
+    
+        if num_of_features == 1:
+            time_conv_output = self.relu(time_conv)
+        else:
+            time_conv_output = self.relu(X + time_conv)  # B,F,N,T
+    
+        # Residual shortcut
+        if num_of_features == 1:
+            x_residual = self.residual_conv(x.permute(0, 2, 1, 3))
+        else:
+            x_residual = x.permute(0, 2, 1, 3)
+        x_residual = self.ln(F.relu(x_residual + time_conv_output).permute(0, 3, 2, 1)).permute(0, 2, 3, 1)
+    
+        return x_residual, re_At
 
 class DSTAGNN_submodule(nn.Module):
 
