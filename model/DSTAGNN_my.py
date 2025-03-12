@@ -263,101 +263,59 @@ class GTU(nn.Module):
 
 
 
-class DSTAGNN_block(nn.Module):
-    def __init__(self, DEVICE, num_of_d, in_channels, K, nb_chev_filter, nb_time_filter, time_strides,
-                 cheb_polynomials, adj_pa, adj_TMD, num_of_vertices, num_of_timesteps, d_model, d_k, d_v, n_heads):
-        super(DSTAGNN_block, self).__init__()
+def forward(self, x, res_att):
+    '''
+    :param x: (Batch_size, N, F_in, T)
+    :param res_att: (Batch_size, N, F_in, T)
+    :return: (Batch_size, N, nb_time_filter, T)
+    '''
+    batch_size, num_of_vertices, num_of_features, num_of_timesteps = x.shape
 
-        self.sigmoid = nn.Sigmoid()
-        self.tanh = nn.Tanh()
-        self.relu = nn.ReLU(inplace=True)
+    # TAT
+    if num_of_features == 1:
+        TEmx = self.EmbedT(x, batch_size)  # B,F,T,N
+    else:
+        TEmx = x.permute(0, 2, 3, 1)  # B,F,T,N
 
-        # Handle adj_pa being None
-        if adj_pa is not None:
-            self.adj_pa = torch.FloatTensor(adj_pa).to(DEVICE)
-        else:
-            self.adj_pa = torch.zeros((num_of_vertices, num_of_vertices)).to(DEVICE)  # Use a zero matrix as a placeholder
+    # Ensure TATout has the correct shape for pre_conv
+    TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
 
-        # Update pre_conv to match the expected input channels
-        self.pre_conv = nn.Conv2d(num_of_timesteps, d_model, kernel_size=(1, num_of_d))
+    # Permute TATout to match the expected input shape for pre_conv
+    TATout = TATout.permute(0, 3, 1, 2)  # B,T,F,N
 
-        self.EmbedT = Embedding(num_of_timesteps, num_of_vertices, num_of_d, 'T')
-        self.EmbedS = Embedding(num_of_vertices, d_model, num_of_d, 'S')
+    # Apply pre_conv
+    x_TAt = self.pre_conv(TATout)[:, :, :, -1].permute(0, 2, 1)  # B,N,d_model
 
-        self.TAt = MultiHeadAttention(DEVICE, num_of_vertices, d_k, d_v, n_heads, num_of_d)
-        self.SAt = SMultiHeadAttention(DEVICE, d_model, d_k, d_v, K)
+    # SAt
+    SEmx_TAt = self.EmbedS(x_TAt, batch_size)  # B,N,d_model
+    SEmx_TAt = self.dropout(SEmx_TAt)  # B,N,d_model
+    STAt = self.SAt(SEmx_TAt, SEmx_TAt, None)  # B,Hs,N,N
 
-        self.cheb_conv_SAt = cheb_conv_withSAt(K, cheb_polynomials, in_channels, nb_chev_filter, num_of_vertices)
+    # Graph convolution in spatial dim
+    spatial_gcn = self.cheb_conv_SAt(x, STAt, self.adj_pa)  # B,N,F,T
 
-        self.gtu3 = GTU(nb_time_filter, time_strides, 3)
-        self.gtu5 = GTU(nb_time_filter, time_strides, 5)
-        self.gtu7 = GTU(nb_time_filter, time_strides, 7)
-        self.pooling = torch.nn.MaxPool2d(kernel_size=(1, 2), stride=None, padding=0,
-                                          return_indices=False, ceil_mode=False)
+    # Convolution along the time axis
+    X = spatial_gcn.permute(0, 2, 1, 3)  # B,F,N,T
+    x_gtu = []
+    x_gtu.append(self.gtu3(X))  # B,F,N,T-2
+    x_gtu.append(self.gtu5(X))  # B,F,N,T-4
+    x_gtu.append(self.gtu7(X))  # B,F,N,T-6
+    time_conv = torch.cat(x_gtu, dim=-1)  # B,F,N,3T-12
+    time_conv = self.fcmy(time_conv)
 
-        self.residual_conv = nn.Conv2d(in_channels, nb_time_filter, kernel_size=(1, 1), stride=(1, time_strides))
+    if num_of_features == 1:
+        time_conv_output = self.relu(time_conv)
+    else:
+        time_conv_output = self.relu(X + time_conv)  # B,F,N,T
 
-        self.dropout = nn.Dropout(p=0.05)
-        self.fcmy = nn.Sequential(
-            nn.Linear(3 * num_of_timesteps - 12, num_of_timesteps),
-            nn.Dropout(0.05),
-        )
-        self.ln = nn.LayerNorm(nb_time_filter)
+    # Residual shortcut
+    if num_of_features == 1:
+        x_residual = self.residual_conv(x.permute(0, 2, 1, 3))
+    else:
+        x_residual = x.permute(0, 2, 1, 3)
+    x_residual = self.ln(F.relu(x_residual + time_conv_output).permute(0, 3, 2, 1)).permute(0, 2, 3, 1)
 
-    def forward(self, x, res_att):
-        '''
-        :param x: (Batch_size, N, F_in, T)
-        :param res_att: (Batch_size, N, F_in, T)
-        :return: (Batch_size, N, nb_time_filter, T)
-        '''
-        batch_size, num_of_vertices, num_of_features, num_of_timesteps = x.shape
-
-        # TAT
-        if num_of_features == 1:
-            TEmx = self.EmbedT(x, batch_size)  # B,F,T,N
-        else:
-            TEmx = x.permute(0, 2, 3, 1)  # B,F,T,N
-
-        # Ensure TATout has the correct shape for pre_conv
-        TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
-
-        # Permute TATout to match the expected input shape for pre_conv
-        TATout = TATout.permute(0, 3, 1, 2)  # B,T,F,N
-
-        # Apply pre_conv
-        x_TAt = self.pre_conv(TATout)[:, :, :, -1].permute(0, 2, 1)  # B,N,d_model
-
-        # SAt
-        SEmx_TAt = self.EmbedS(x_TAt, batch_size)  # B,N,d_model
-        SEmx_TAt = self.dropout(SEmx_TAt)  # B,N,d_model
-        STAt = self.SAt(SEmx_TAt, SEmx_TAt, None)  # B,Hs,N,N
-
-        # Graph convolution in spatial dim
-        spatial_gcn = self.cheb_conv_SAt(x, STAt, self.adj_pa)  # B,N,F,T
-
-        # Convolution along the time axis
-        X = spatial_gcn.permute(0, 2, 1, 3)  # B,F,N,T
-        x_gtu = []
-        x_gtu.append(self.gtu3(X))  # B,F,N,T-2
-        x_gtu.append(self.gtu5(X))  # B,F,N,T-4
-        x_gtu.append(self.gtu7(X))  # B,F,N,T-6
-        time_conv = torch.cat(x_gtu, dim=-1)  # B,F,N,3T-12
-        time_conv = self.fcmy(time_conv)
-
-        if num_of_features == 1:
-            time_conv_output = self.relu(time_conv)
-        else:
-            time_conv_output = self.relu(X + time_conv)  # B,F,N,T
-
-        # Residual shortcut
-        if num_of_features == 1:
-            x_residual = self.residual_conv(x.permute(0, 2, 1, 3))
-        else:
-            x_residual = x.permute(0, 2, 1, 3)
-        x_residual = self.ln(F.relu(x_residual + time_conv_output).permute(0, 3, 2, 1)).permute(0, 2, 3, 1)
-
-        return x_residual, re_At
-
+    return x_residual, re_At
 
 class DSTAGNN_submodule(nn.Module):
 
