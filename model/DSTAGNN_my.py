@@ -276,7 +276,6 @@ class DSTAGNN_block(nn.Module):
         else:
             self.adj_pa = torch.zeros((num_of_vertices, num_of_vertices)).to(DEVICE)  # Use a zero matrix as a placeholder
 
-        # Update pre_conv to match the expected input channels
         self.pre_conv = nn.Conv2d(num_of_timesteps, d_model, kernel_size=(1, num_of_d))
 
         self.EmbedT = Embedding(num_of_timesteps, num_of_vertices, num_of_d, 'T')
