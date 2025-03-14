@@ -106,8 +106,13 @@ def train_main(rank, world_size, args):
         adj_mx = load_weighted_adjacency_matrix2(adj_filename, num_of_vertices)
 
     # Handle STAG and STRG files (set to None if not provided)
-    adj_TMD = load_weighted_adjacency_matrix(stag_filename, num_of_vertices) if stag_filename is not None else None
-    adj_pa = load_PA(strg_filename) if strg_filename is not None else None
+    # Load STAG and STRG (if provided)
+    adj_TMD = None
+    adj_pa = None
+    if stag_filename is not None and stag_filename != 'None':
+        adj_TMD = load_weighted_adjacency_matrix(stag_filename, num_of_vertices)
+    if strg_filename is not None and strg_filename != 'None':
+        adj_pa = load_PA(strg_filename)
 
     # Create the model
     net = make_model(rank, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_mx,
