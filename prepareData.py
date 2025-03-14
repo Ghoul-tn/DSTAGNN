@@ -170,7 +170,6 @@ def read_and_generate_dataset(graph_signal_matrix_filename,
 
     return train_data, val_data, test_data, train_target, val_target, test_target
 
-
 def normalization(train, val, test):
     '''
     Parameters
