@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import argparse
 from scipy.optimize import linprog
+from joblib import Parallel, delayed  # For parallel processing
 
 def check_data(data, name):
     if np.any(np.isnan(data)) or np.any(np.isinf(data)):
@@ -100,15 +101,26 @@ num_nodes = time_series.shape[1]
 # Initialize the STAG matrix
 d = np.zeros([num_nodes, num_nodes])
 
-# Compute spatial-temporal similarity
+# Function to compute similarity for a single pair (i, j)
+def compute_similarity(i, j):
+    return spatial_temporal_similarity(time_series[:, i], time_series[:, j], normal=False, transpose=False)
+
+# Use joblib to parallelize the pairwise comparisons
+print("Starting parallel computation of spatial-temporal similarity...")
 t0 = time.time()
+
+# Create a list of (i, j) pairs to process
+pairs = [(i, j) for i in range(num_nodes) for j in range(i + 1, num_nodes)]
+
+# Use joblib to compute similarities in parallel
+results = Parallel(n_jobs=-1)(delayed(compute_similarity)(i, j) for i, j in pairs)
+
+# Fill the STAG matrix with the results
+k = 0
 for i in range(num_nodes):
-    t1 = time.time()
     for j in range(i + 1, num_nodes):
-        d[i, j] = spatial_temporal_similarity(time_series[:, i], time_series[:, j], normal=False, transpose=False)
-        print(f'\rProcessing node pair ({i}, {j})', end='', flush=True)
-    t2 = time.time()
-    print(f'Line {i} finished in {t2 - t1} seconds.')
+        d[i, j] = results[k]
+        k += 1
 
 # Symmetrize the matrix
 stag = d + d.T
