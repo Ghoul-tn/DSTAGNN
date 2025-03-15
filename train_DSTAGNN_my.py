@@ -144,8 +144,6 @@ def train_main():
 
         for batch_index, batch_data in enumerate(train_loader):
             encoder_inputs, labels = batch_data
-            print("Encoder inputs shape:", encoder_inputs.shape)  # Should be (batch_size, num_nodes, num_features, num_timesteps)
-            print("Labels shape:", labels.shape)  # Should be (batch_size, num_nodes, num_timesteps)
             encoder_inputs = encoder_inputs.to(DEVICE, non_blocking=True)  # Move inputs to the correct device
             labels = labels.to(DEVICE, non_blocking=True)  # Move labels to the correct device
 
