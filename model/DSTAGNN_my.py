@@ -234,15 +234,17 @@ class Embedding(nn.Module):
 
     def forward(self, x, batch_size):
         if self.Etype == 'T':
-            pos = torch.arange(self.nb_seq, dtype=torch.long).to(x.device)  # Move to the same device as x
-            pos = pos.unsqueeze(0).unsqueeze(0).expand(batch_size, self.num_of_features, self.nb_seq)
+            pos = torch.arange(self.nb_seq, dtype=torch.long).cuda()
+            pos = pos.unsqueeze(0).unsqueeze(0).expand(batch_size, self.num_of_features,
+                                                   self.nb_seq)  # [seq_len] -> [batch_size, seq_len]
             embedding = x.permute(0, 2, 3, 1) + self.pos_embed(pos)
         else:
-            pos = torch.arange(self.nb_seq, dtype=torch.long).to(x.device)  # Move to the same device as x
+            pos = torch.arange(self.nb_seq, dtype=torch.long).cuda()
             pos = pos.unsqueeze(0).expand(batch_size, self.nb_seq)
             embedding = x + self.pos_embed(pos)
         Emx = self.norm(embedding)
         return Emx
+
 
 class GTU(nn.Module):
     def __init__(self, in_channels, time_strides, kernel_size):
@@ -259,6 +261,8 @@ class GTU(nn.Module):
         x_gtu = torch.mul(self.tanh(x_p), self.sigmoid(x_q))
         return x_gtu
 
+
+
 class DSTAGNN_block(nn.Module):
     def __init__(self, DEVICE, num_of_d, in_channels, K, nb_chev_filter, nb_time_filter, time_strides,
                  cheb_polynomials, adj_pa, adj_TMD, num_of_vertices, num_of_timesteps, d_model, d_k, d_v, n_heads):
@@ -274,30 +278,30 @@ class DSTAGNN_block(nn.Module):
         else:
             self.adj_pa = torch.zeros((num_of_vertices, num_of_vertices)).to(DEVICE)  # Use a zero matrix as a placeholder
 
-        self.pre_conv = nn.Conv2d(num_of_timesteps, d_model, kernel_size=(1, num_of_d)).to(DEVICE)
+        self.pre_conv = nn.Conv2d(num_of_timesteps, d_model, kernel_size=(1, num_of_d))
 
-        self.EmbedT = Embedding(num_of_timesteps, num_of_vertices, num_of_d, 'T').to(DEVICE)
-        self.EmbedS = Embedding(num_of_vertices, d_model, num_of_d, 'S').to(DEVICE)
+        self.EmbedT = Embedding(num_of_timesteps, num_of_vertices, num_of_d, 'T')
+        self.EmbedS = Embedding(num_of_vertices, d_model, num_of_d, 'S')
 
-        self.TAt = MultiHeadAttention(DEVICE, num_of_vertices, d_k, d_v, n_heads, num_of_d).to(DEVICE)
-        self.SAt = SMultiHeadAttention(DEVICE, d_model, d_k, d_v, K).to(DEVICE)
+        self.TAt = MultiHeadAttention(DEVICE, num_of_vertices, d_k, d_v, n_heads, num_of_d)
+        self.SAt = SMultiHeadAttention(DEVICE, d_model, d_k, d_v, K)
 
-        self.cheb_conv_SAt = cheb_conv_withSAt(K, cheb_polynomials, in_channels, nb_chev_filter, num_of_vertices).to(DEVICE)
+        self.cheb_conv_SAt = cheb_conv_withSAt(K, cheb_polynomials, in_channels, nb_chev_filter, num_of_vertices)
 
-        self.gtu3 = GTU(nb_time_filter, time_strides, 3).to(DEVICE)
-        self.gtu5 = GTU(nb_time_filter, time_strides, 5).to(DEVICE)
-        self.gtu7 = GTU(nb_time_filter, time_strides, 7).to(DEVICE)
+        self.gtu3 = GTU(nb_time_filter, time_strides, 3)
+        self.gtu5 = GTU(nb_time_filter, time_strides, 5)
+        self.gtu7 = GTU(nb_time_filter, time_strides, 7)
         self.pooling = torch.nn.MaxPool2d(kernel_size=(1, 2), stride=None, padding=0,
-                                          return_indices=False, ceil_mode=False).to(DEVICE)
+                                          return_indices=False, ceil_mode=False)
 
-        self.residual_conv = nn.Conv2d(in_channels, nb_time_filter, kernel_size=(1, 1), stride=(1, time_strides)).to(DEVICE)
+        self.residual_conv = nn.Conv2d(in_channels, nb_time_filter, kernel_size=(1, 1), stride=(1, time_strides))
 
-        self.dropout = nn.Dropout(p=0.05).to(DEVICE)
+        self.dropout = nn.Dropout(p=0.05)
         self.fcmy = nn.Sequential(
             nn.Linear(3 * num_of_timesteps - 12, num_of_timesteps),
             nn.Dropout(0.05),
-        ).to(DEVICE)
-        self.ln = nn.LayerNorm(nb_time_filter).to(DEVICE)
+        )
+        self.ln = nn.LayerNorm(nb_time_filter)
 
     def forward(self, x, res_att):
         '''
@@ -305,27 +309,26 @@ class DSTAGNN_block(nn.Module):
         :param res_att: (Batch_size, N, F_in, T)
         :return: (Batch_size, N, nb_time_filter, T)
         '''
-        batch_size, num_of_vertices, num_of_features, num_of_timesteps = x.shape
+        batch_size, num_of_vertices, num_of_features, num_of_timesteps = x.shape  # B,N,F,T
 
         # TAT
         if num_of_features == 1:
             TEmx = self.EmbedT(x, batch_size)  # B,F,T,N
         else:
             TEmx = x.permute(0, 2, 3, 1)
-
         TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
 
         x_TAt = self.pre_conv(TATout.permute(0, 2, 3, 1))[:, :, :, -1].permute(0, 2, 1)  # B,N,d_model
 
         # SAt
         SEmx_TAt = self.EmbedS(x_TAt, batch_size)  # B,N,d_model
-        SEmx_TAt = self.dropout(SEmx_TAt)  # B,N,d_model
+        SEmx_TAt = self.dropout(SEmx_TAt)   # B,N,d_model
         STAt = self.SAt(SEmx_TAt, SEmx_TAt, None)  # B,Hs,N,N
 
-        # Graph convolution in spatial dimension
+        # graph convolution in spatial dim
         spatial_gcn = self.cheb_conv_SAt(x, STAt, self.adj_pa)  # B,N,F,T
 
-        # Convolution along the time axis
+        # convolution along the time axis
         X = spatial_gcn.permute(0, 2, 1, 3)  # B,F,N,T
         x_gtu = []
         x_gtu.append(self.gtu3(X))  # B,F,N,T-2
@@ -339,7 +342,7 @@ class DSTAGNN_block(nn.Module):
         else:
             time_conv_output = self.relu(X + time_conv)  # B,F,N,T
 
-        # Residual shortcut
+        # residual shortcut
         if num_of_features == 1:
             x_residual = self.residual_conv(x.permute(0, 2, 1, 3))
         else:
@@ -347,6 +350,8 @@ class DSTAGNN_block(nn.Module):
         x_residual = self.ln(F.relu(x_residual + time_conv_output).permute(0, 3, 2, 1)).permute(0, 2, 3, 1)
 
         return x_residual, re_At
+
+
 class DSTAGNN_submodule(nn.Module):
 
     def __init__(self, DEVICE, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides,
@@ -435,4 +440,4 @@ def make_model(DEVICE, num_of_d, nb_block, in_channels, K,
         else:
             nn.init.uniform_(p)
 
-    return model.to(DEVICE)  # Move the entire model to the correct device
+    return model
