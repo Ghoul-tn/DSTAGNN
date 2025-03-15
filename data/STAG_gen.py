@@ -33,13 +33,26 @@ def wasserstein_distance(p, q, D):
     check_data(A_eq, "A_eq")
     check_data(b_eq, "b_eq")
 
+    # Debug: Check the result of linprog
     result = linprog(D, A_eq=A_eq[:-1], b_eq=b_eq[:-1])
-    myresult = result.fun
+    if not result.success:
+        print("Warning: linprog failed to find a solution")
+        return None
 
+    myresult = result.fun
     return myresult
 
 def spatial_temporal_aware_distance(x, y):
     x, y = np.array(x), np.array(y)
+    
+    # Debug: Check for NaN or Inf values
+    if np.any(np.isnan(x)) or np.any(np.isinf(x)):
+        print("Warning: x contains NaN or Inf values")
+        return None
+    if np.any(np.isnan(y)) or np.any(np.isinf(y)):
+        print("Warning: y contains NaN or Inf values")
+        return None
+
     x_norm = (x**2).sum(axis=1, keepdims=True)**0.5
     y_norm = (y**2).sum(axis=1, keepdims=True)**0.5
     p = x_norm[:, 0] / x_norm.sum()
@@ -50,7 +63,13 @@ def spatial_temporal_aware_distance(x, y):
     D = np.nan_to_num(D, nan=0.0, posinf=np.finfo(np.float64).max, neginf=np.finfo(np.float64).min)
     check_data(D, "D")
 
-    return wasserstein_distance(p, q, D)
+    # Debug: Check the output of wasserstein_distance
+    distance = wasserstein_distance(p, q, D)
+    if distance is None:
+        print("Warning: wasserstein_distance returned None")
+        return None
+
+    return distance
 
 def spatial_temporal_similarity(x, y, normal, transpose):
     # Ensure x and y are 2D arrays
@@ -65,7 +84,13 @@ def spatial_temporal_similarity(x, y, normal, transpose):
     if transpose:
         x = np.transpose(x)
         y = np.transpose(y)
-    return 1 - spatial_temporal_aware_distance(x, y)
+
+    # Compute spatial-temporal distance
+    distance = spatial_temporal_aware_distance(x, y)
+    if distance is None:
+        return 0.0  # Return a default value (e.g., 0.0) if distance is None
+
+    return 1 - distance
 
 def normalize(a):
     mu = np.mean(a, axis=1, keepdims=True)
