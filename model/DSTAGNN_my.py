@@ -75,7 +75,7 @@ class SMultiHeadAttention(nn.Module):
         return attn
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, DEVICE, d_model, d_k, d_v, n_heads, num_of_d):
+    def __init__(self, DEVICE, d_model, d_k ,d_v, n_heads, num_of_d):
         super(MultiHeadAttention, self).__init__()
         self.d_model = d_model
         self.d_k = d_k
@@ -96,41 +96,23 @@ class MultiHeadAttention(nn.Module):
         attn_mask: [batch_size, seq_len, seq_len]
         '''
         residual, batch_size = input_Q, input_Q.size(0)
-        print("Input Q shape:", input_Q.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
-        print("Input K shape:", input_K.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
-        print("Input V shape:", input_V.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
-        # Reshape and transpose the input tensors
-        input_Q = input_Q.permute(0, 2, 1, 3)  # Shape: (batch_size, num_of_hours, num_nodes, num_features)
-        input_K = input_K.permute(0, 2, 1, 3)  # Shape: (batch_size, num_of_hours, num_nodes, num_features)
-        input_V = input_V.permute(0, 2, 1, 3)  # Shape: (batch_size, num_of_hours, num_nodes, num_features)
-        print("Input Q shape after reshape:", input_Q.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
-        print("Input K shape after reshape::", input_K.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
-        print("Input V shape after reshape::", input_V.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
-        # Flatten the spatial and temporal dimensions
-        input_Q = input_Q.reshape(batch_size, -1, self.d_model)  # Shape: (batch_size, num_of_hours * num_nodes, d_model)
-        input_K = input_K.reshape(batch_size, -1, self.d_model)  # Shape: (batch_size, num_of_hours * num_nodes, d_model)
-        input_V = input_V.reshape(batch_size, -1, self.d_model)  # Shape: (batch_size, num_of_hours * num_nodes, d_model)
-        print("Input Q shape after Flattening the spatial and temporal dimensions:", input_Q.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
-        print("Input K shape after Flattening the spatial and temporal dimensions:", input_K.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
-        print("Input V shape after Flattening the spatial and temporal dimensions:", input_V.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
         # (B, S, D) -proj-> (B, S, D_new) -split-> (B, S, H, W) -trans-> (B, H, S, W)
-        Q = self.W_Q(input_Q).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)  # Q: [batch_size, n_heads, len_q, d_k]
-        K = self.W_K(input_K).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)  # K: [batch_size, n_heads, len_k, d_k]
-        V = self.W_V(input_V).view(batch_size, -1, self.n_heads, self.d_v).transpose(1, 2)  # V: [batch_size, n_heads, len_v(=len_k), d_v]
-        print("Q shape:", Q.shape)  # Should be (batch_size, n_heads, len_q, d_k)
-        print("K shape:", K.shape)  # Should be (batch_size, n_heads, len_k, d_k)
-        print("V shape:", V.shape)  # Should be (batch_size, n_heads, len_v, d_v)
+        Q = self.W_Q(input_Q).view(batch_size, self.num_of_d, -1, self.n_heads, self.d_k).transpose(2, 3)  # Q: [batch_size, n_heads, len_q, d_k]
+        K = self.W_K(input_K).view(batch_size, self.num_of_d, -1, self.n_heads, self.d_k).transpose(2, 3)  # K: [batch_size, n_heads, len_k, d_k]
+        V = self.W_V(input_V).view(batch_size, self.num_of_d, -1, self.n_heads, self.d_v).transpose(2, 3)  # V: [batch_size, n_heads, len_v(=len_k), d_v]
         if attn_mask is not None:
-            attn_mask = attn_mask.unsqueeze(1).repeat(1, self.n_heads, 1, 1)  # attn_mask : [batch_size, n_heads, seq_len, seq_len]
-
+            attn_mask = attn_mask.unsqueeze(1).repeat(1, self.n_heads, 1,
+                                                  1)  # attn_mask : [batch_size, n_heads, seq_len, seq_len]
         # context: [batch_size, n_heads, len_q, d_v], attn: [batch_size, n_heads, len_q, len_k]
         context, res_attn = ScaledDotProductAttention(self.d_k, self.num_of_d)(Q, K, V, attn_mask, res_att)
 
-        context = context.transpose(1, 2).reshape(batch_size, -1, self.n_heads * self.d_v)  # context: [batch_size, len_q, n_heads * d_v]
+        context = context.transpose(2, 3).reshape(batch_size, self.num_of_d, -1,
+                                                  self.n_heads * self.d_v)  # context: [batch_size, len_q, n_heads * d_v]
         output = self.fc(context)  # [batch_size, len_q, d_model]
-        print("Context shape:", context.shape)  # Should be (batch_size, len_q, n_heads * d_v)
-        print("Output shape:", output.shape)  # Should be (batch_size, len_q, d_model)
+
         return nn.LayerNorm(self.d_model).to(self.DEVICE)(output + residual), res_attn
+
+
 class cheb_conv_withSAt(nn.Module):
     '''
     K-order chebyshev graph convolution
@@ -328,46 +310,45 @@ class DSTAGNN_block(nn.Module):
         :return: (Batch_size, N, nb_time_filter, T)
         '''
         batch_size, num_of_vertices, num_of_features, num_of_timesteps = x.shape  # B,N,F,T
-        print("Input shape:", x.shape)  # Should be (batch_size, num_nodes, num_features, num_of_hours)
+
         # TAT
         if num_of_features == 1:
             TEmx = self.EmbedT(x, batch_size)  # B,F,T,N
         else:
-            TEmx = x.permute(0, 2, 3, 1)  # B,F,T,N
-
+            TEmx = x.permute(0, 2, 3, 1)
         TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
-        print("TATout shape:", TATout.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
+
         x_TAt = self.pre_conv(TATout.permute(0, 2, 3, 1))[:, :, :, -1].permute(0, 2, 1)  # B,N,d_model
-        print("x_TAt shape:", x_TAt.shape)  # Should be (batch_size, num_nodes, d_model)
+
         # SAt
         SEmx_TAt = self.EmbedS(x_TAt, batch_size)  # B,N,d_model
-        SEmx_TAt = self.dropout(SEmx_TAt)  # B,N,d_model
+        SEmx_TAt = self.dropout(SEmx_TAt)   # B,N,d_model
         STAt = self.SAt(SEmx_TAt, SEmx_TAt, None)  # B,Hs,N,N
-        print("STAt shape:", STAt.shape)  # Should be (batch_size, num_heads, num_nodes, num_nodes)
-        # Graph convolution in spatial dim
+
+        # graph convolution in spatial dim
         spatial_gcn = self.cheb_conv_SAt(x, STAt, self.adj_pa)  # B,N,F,T
-        print("spatial_gcn shape:", spatial_gcn.shape)  # Should be (batch_size, num_nodes, num_features, num_of_hours)
-        # Convolution along the time axis
+
+        # convolution along the time axis
         X = spatial_gcn.permute(0, 2, 1, 3)  # B,F,N,T
         x_gtu = []
         x_gtu.append(self.gtu3(X))  # B,F,N,T-2
         x_gtu.append(self.gtu5(X))  # B,F,N,T-4
         x_gtu.append(self.gtu7(X))  # B,F,N,T-6
         time_conv = torch.cat(x_gtu, dim=-1)  # B,F,N,3T-12
-        time_conv = self.fcmy(time_conv)  # B,F,N,T
-        print("time_conv shape:", time_conv.shape)  # Should be (batch_size, num_features, num_nodes, num_of_hours)
+        time_conv = self.fcmy(time_conv)
+
         if num_of_features == 1:
             time_conv_output = self.relu(time_conv)
         else:
             time_conv_output = self.relu(X + time_conv)  # B,F,N,T
-        print("time_conv_output shape:", time_conv_output.shape)  # Should be (batch_size, num_features, num_nodes, num_of_hours)
-        # Residual shortcut
+
+        # residual shortcut
         if num_of_features == 1:
             x_residual = self.residual_conv(x.permute(0, 2, 1, 3))
         else:
             x_residual = x.permute(0, 2, 1, 3)
         x_residual = self.ln(F.relu(x_residual + time_conv_output).permute(0, 3, 2, 1)).permute(0, 2, 3, 1)
-        print("x_residual shape:", x_residual.shape)  # Should be (batch_size, num_nodes, num_features, num_of_hours)
+
         return x_residual, re_At
 
 
@@ -433,13 +414,13 @@ def make_model(DEVICE, num_of_d, nb_block, in_channels, K,
     '''
     :param DEVICE:
     :param nb_block:
-    :param in_channels: Number of input features (e.g., 4 for NDVI, Soil Moisture, SPI, LST)
+    :param in_channels:
     :param K:
     :param nb_chev_filter:
     :param nb_time_filter:
     :param time_strides:
-    :param num_for_predict: Number of future timesteps to predict
-    :param len_input: Number of timesteps in the input data
+    :param num_for_predict:
+    :param len_input
     :return:
     '''
     L_tilde = scaled_Laplacian(adj_mx)
