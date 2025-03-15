@@ -310,7 +310,7 @@ class DSTAGNN_block(nn.Module):
         :return: (Batch_size, N, nb_time_filter, T)
         '''
         batch_size, num_of_vertices, num_of_features, num_of_timesteps = x.shape  # B,N,F,T
-
+        print("Input shape:", x.shape)  # Should be (batch_size, num_nodes, num_features, num_of_hours)
         # TAT
         if num_of_features == 1:
             TEmx = self.EmbedT(x, batch_size)  # B,F,T,N
@@ -318,17 +318,17 @@ class DSTAGNN_block(nn.Module):
             TEmx = x.permute(0, 2, 3, 1)  # B,F,T,N
 
         TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
-
+        print("TATout shape:", TATout.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
         x_TAt = self.pre_conv(TATout.permute(0, 2, 3, 1))[:, :, :, -1].permute(0, 2, 1)  # B,N,d_model
-
+        print("x_TAt shape:", x_TAt.shape)  # Should be (batch_size, num_nodes, d_model)
         # SAt
         SEmx_TAt = self.EmbedS(x_TAt, batch_size)  # B,N,d_model
         SEmx_TAt = self.dropout(SEmx_TAt)  # B,N,d_model
         STAt = self.SAt(SEmx_TAt, SEmx_TAt, None)  # B,Hs,N,N
-
+        print("STAt shape:", STAt.shape)  # Should be (batch_size, num_heads, num_nodes, num_nodes)
         # Graph convolution in spatial dim
         spatial_gcn = self.cheb_conv_SAt(x, STAt, self.adj_pa)  # B,N,F,T
-
+        print("spatial_gcn shape:", spatial_gcn.shape)  # Should be (batch_size, num_nodes, num_features, num_of_hours)
         # Convolution along the time axis
         X = spatial_gcn.permute(0, 2, 1, 3)  # B,F,N,T
         x_gtu = []
@@ -337,19 +337,19 @@ class DSTAGNN_block(nn.Module):
         x_gtu.append(self.gtu7(X))  # B,F,N,T-6
         time_conv = torch.cat(x_gtu, dim=-1)  # B,F,N,3T-12
         time_conv = self.fcmy(time_conv)  # B,F,N,T
-
+        print("time_conv shape:", time_conv.shape)  # Should be (batch_size, num_features, num_nodes, num_of_hours)
         if num_of_features == 1:
             time_conv_output = self.relu(time_conv)
         else:
             time_conv_output = self.relu(X + time_conv)  # B,F,N,T
-
+        print("time_conv_output shape:", time_conv_output.shape)  # Should be (batch_size, num_features, num_nodes, num_of_hours)
         # Residual shortcut
         if num_of_features == 1:
             x_residual = self.residual_conv(x.permute(0, 2, 1, 3))
         else:
             x_residual = x.permute(0, 2, 1, 3)
         x_residual = self.ln(F.relu(x_residual + time_conv_output).permute(0, 3, 2, 1)).permute(0, 2, 3, 1)
-
+        print("x_residual shape:", x_residual.shape)  # Should be (batch_size, num_nodes, num_features, num_of_hours)
         return x_residual, re_At
 
 
