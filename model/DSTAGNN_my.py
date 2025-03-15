@@ -96,15 +96,22 @@ class MultiHeadAttention(nn.Module):
         attn_mask: [batch_size, seq_len, seq_len]
         '''
         residual, batch_size = input_Q, input_Q.size(0)
-        print("Input Q shape:", input_Q.shape)  # Should be (batch_size, len_q, d_model)
-        print("Input K shape:", input_K.shape)  # Should be (batch_size, len_k, d_model)
-        print("Input V shape:", input_V.shape)  # Should be (batch_size, len_v, d_model)
+        print("Input Q shape:", input_Q.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
+        print("Input K shape:", input_K.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
+        print("Input V shape:", input_V.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
+        # Reshape and transpose the input tensors
+        input_Q = input_Q.permute(0, 2, 3, 1)  # Shape: (batch_size, num_features, num_of_hours, num_nodes)
+        input_K = input_K.permute(0, 2, 3, 1)  # Shape: (batch_size, num_features, num_of_hours, num_nodes)
+        input_V = input_V.permute(0, 2, 3, 1)  # Shape: (batch_size, num_features, num_of_hours, num_nodes)
+        print("Input Q shape after reshape:", input_Q.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
+        print("Input K shape after reshape:", input_K.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
+        print("Input V shape after reshape:", input_V.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
         # (B, S, D) -proj-> (B, S, D_new) -split-> (B, S, H, W) -trans-> (B, H, S, W)
         Q = self.W_Q(input_Q).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)  # Q: [batch_size, n_heads, len_q, d_k]
-        print("Q shape:", Q.shape)  # Should be (batch_size, n_heads, len_q, d_k)
         K = self.W_K(input_K).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)  # K: [batch_size, n_heads, len_k, d_k]
-        print("K shape:", K.shape)  # Should be (batch_size, n_heads, len_k, d_k)
         V = self.W_V(input_V).view(batch_size, -1, self.n_heads, self.d_v).transpose(1, 2)  # V: [batch_size, n_heads, len_v(=len_k), d_v]
+        print("Q shape:", Q.shape)  # Should be (batch_size, n_heads, len_q, d_k)
+        print("K shape:", K.shape)  # Should be (batch_size, n_heads, len_k, d_k)
         print("V shape:", V.shape)  # Should be (batch_size, n_heads, len_v, d_v)
         if attn_mask is not None:
             attn_mask = attn_mask.unsqueeze(1).repeat(1, self.n_heads, 1, 1)  # attn_mask : [batch_size, n_heads, seq_len, seq_len]
@@ -114,10 +121,9 @@ class MultiHeadAttention(nn.Module):
 
         context = context.transpose(1, 2).reshape(batch_size, -1, self.n_heads * self.d_v)  # context: [batch_size, len_q, n_heads * d_v]
         output = self.fc(context)  # [batch_size, len_q, d_model]
-        print("Context shape:", context.shape)  # Should be (batch_size, n_heads, len_q, d_v)
+        print("Context shape:", context.shape)  # Should be (batch_size, len_q, n_heads * d_v)
         print("Output shape:", output.shape)  # Should be (batch_size, len_q, d_model)
         return nn.LayerNorm(self.d_model).to(self.DEVICE)(output + residual), res_attn
-
 class cheb_conv_withSAt(nn.Module):
     '''
     K-order chebyshev graph convolution
