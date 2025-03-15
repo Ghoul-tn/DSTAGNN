@@ -136,9 +136,6 @@ def read_and_generate_dataset(graph_signal_matrix_filename,
     if len(target.shape) != 2:
         raise ValueError("Target data must have shape (num_timesteps, num_nodes)")
 
-    # Add a new dimension for num_features
-    input_features = np.expand_dims(input_features, axis=-1)  # Shape: (num_timesteps, num_nodes, num_features, 1)
-
     # Split the data into training, validation, and test sets
     num_samples = input_features.shape[0]
     train_size = int(num_samples * 0.6)
@@ -153,13 +150,13 @@ def read_and_generate_dataset(graph_signal_matrix_filename,
     test_target = target[train_size + val_size:]
 
     # Compute mean and std for normalization
-    mean = train_data.mean(axis=(0, 1, 3), keepdims=True)
-    std = train_data.std(axis=(0, 1, 3), keepdims=True)
+    mean = train_data.mean(axis=(0, 1), keepdims=True)  # Shape: (1, 1, num_features)
+    std = train_data.std(axis=(0, 1), keepdims=True)  # Shape: (1, 1, num_features)
 
     # Save the datasets (optional)
     if save:
         file = os.path.basename(graph_signal_matrix_filename).split('.')[0]
-        dirpath = os.path.dirname("/kaggle/working/")
+        dirpath = os.path.dirname(graph_signal_matrix_filename)
         filename = os.path.join(dirpath, f"{file}_r{num_of_hours}_d{num_of_days}_w{num_of_weeks}_dstagnn")
         print('save file:', filename)
         np.savez_compressed(filename,
@@ -169,6 +166,7 @@ def read_and_generate_dataset(graph_signal_matrix_filename,
                             mean=mean, std=std)
 
     return train_data, val_data, test_data, train_target, val_target, test_target
+
 
 def normalization(train, val, test):
     '''
@@ -182,10 +180,8 @@ def normalization(train, val, test):
                                      shape is the same as original
     '''
     assert train.shape[1:] == val.shape[1:] and val.shape[1:] == test.shape[1:]  # ensure the num of nodes is the same
-    mean = train.mean(axis=(0, 1, 3), keepdims=True)
-    std = train.std(axis=(0, 1, 3), keepdims=True)
-    print('mean.shape:', mean.shape)
-    print('std.shape:', std.shape)
+    mean = train.mean(axis=(0, 1), keepdims=True)  # Shape: (1, 1, num_features)
+    std = train.std(axis=(0, 1), keepdims=True)  # Shape: (1, 1, num_features)
 
     def normalize(x):
         return (x - mean) / std
