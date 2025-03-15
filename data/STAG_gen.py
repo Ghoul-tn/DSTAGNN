@@ -78,10 +78,10 @@ args = parser.parse_args()
 
 # Load the multivariate time series data
 data = np.load("/kaggle/input/gambia-files/Gambia_UpperRiver_multivariate_data.npz")["data"]  # Shape: (num_timesteps, num_nodes, num_features)
-print("Shape of time_series:", time_series.shape)
+
 # Extract the time series for each node (average across features)
 time_series = data.mean(axis=2)  # Shape: (num_timesteps, num_nodes)
-
+print("Shape of time_series:", time_series.shape)
 # Compute the number of nodes
 num_nodes = time_series.shape[1]
 
