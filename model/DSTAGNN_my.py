@@ -315,34 +315,35 @@ class DSTAGNN_block(nn.Module):
         if num_of_features == 1:
             TEmx = self.EmbedT(x, batch_size)  # B,F,T,N
         else:
-            TEmx = x.permute(0, 2, 3, 1)
+            TEmx = x.permute(0, 2, 3, 1)  # B,F,T,N
+
         TATout, re_At = self.TAt(TEmx, TEmx, TEmx, None, res_att)  # B,F,T,N; B,F,Ht,T,T
 
         x_TAt = self.pre_conv(TATout.permute(0, 2, 3, 1))[:, :, :, -1].permute(0, 2, 1)  # B,N,d_model
 
         # SAt
         SEmx_TAt = self.EmbedS(x_TAt, batch_size)  # B,N,d_model
-        SEmx_TAt = self.dropout(SEmx_TAt)   # B,N,d_model
+        SEmx_TAt = self.dropout(SEmx_TAt)  # B,N,d_model
         STAt = self.SAt(SEmx_TAt, SEmx_TAt, None)  # B,Hs,N,N
 
-        # graph convolution in spatial dim
+        # Graph convolution in spatial dim
         spatial_gcn = self.cheb_conv_SAt(x, STAt, self.adj_pa)  # B,N,F,T
 
-        # convolution along the time axis
+        # Convolution along the time axis
         X = spatial_gcn.permute(0, 2, 1, 3)  # B,F,N,T
         x_gtu = []
         x_gtu.append(self.gtu3(X))  # B,F,N,T-2
         x_gtu.append(self.gtu5(X))  # B,F,N,T-4
         x_gtu.append(self.gtu7(X))  # B,F,N,T-6
         time_conv = torch.cat(x_gtu, dim=-1)  # B,F,N,3T-12
-        time_conv = self.fcmy(time_conv)
+        time_conv = self.fcmy(time_conv)  # B,F,N,T
 
         if num_of_features == 1:
             time_conv_output = self.relu(time_conv)
         else:
             time_conv_output = self.relu(X + time_conv)  # B,F,N,T
 
-        # residual shortcut
+        # Residual shortcut
         if num_of_features == 1:
             x_residual = self.residual_conv(x.permute(0, 2, 1, 3))
         else:
