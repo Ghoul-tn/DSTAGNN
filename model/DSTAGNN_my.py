@@ -75,7 +75,7 @@ class SMultiHeadAttention(nn.Module):
         return attn
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, DEVICE, d_model, d_k ,d_v, n_heads, num_of_d):
+    def __init__(self, DEVICE, d_model, d_k, d_v, n_heads, num_of_d):
         super(MultiHeadAttention, self).__init__()
         self.d_model = d_model
         self.d_k = d_k
@@ -96,22 +96,27 @@ class MultiHeadAttention(nn.Module):
         attn_mask: [batch_size, seq_len, seq_len]
         '''
         residual, batch_size = input_Q, input_Q.size(0)
+        print("Input Q shape:", input_Q.shape)  # Should be (batch_size, len_q, d_model)
+        print("Input K shape:", input_K.shape)  # Should be (batch_size, len_k, d_model)
+        print("Input V shape:", input_V.shape)  # Should be (batch_size, len_v, d_model)
         # (B, S, D) -proj-> (B, S, D_new) -split-> (B, S, H, W) -trans-> (B, H, S, W)
-        Q = self.W_Q(input_Q).view(batch_size, self.num_of_d, -1, self.n_heads, self.d_k).transpose(2, 3)  # Q: [batch_size, n_heads, len_q, d_k]
-        K = self.W_K(input_K).view(batch_size, self.num_of_d, -1, self.n_heads, self.d_k).transpose(2, 3)  # K: [batch_size, n_heads, len_k, d_k]
-        V = self.W_V(input_V).view(batch_size, self.num_of_d, -1, self.n_heads, self.d_v).transpose(2, 3)  # V: [batch_size, n_heads, len_v(=len_k), d_v]
+        Q = self.W_Q(input_Q).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)  # Q: [batch_size, n_heads, len_q, d_k]
+        print("Q shape:", Q.shape)  # Should be (batch_size, n_heads, len_q, d_k)
+        K = self.W_K(input_K).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)  # K: [batch_size, n_heads, len_k, d_k]
+        print("K shape:", K.shape)  # Should be (batch_size, n_heads, len_k, d_k)
+        V = self.W_V(input_V).view(batch_size, -1, self.n_heads, self.d_v).transpose(1, 2)  # V: [batch_size, n_heads, len_v(=len_k), d_v]
+        print("V shape:", V.shape)  # Should be (batch_size, n_heads, len_v, d_v)
         if attn_mask is not None:
-            attn_mask = attn_mask.unsqueeze(1).repeat(1, self.n_heads, 1,
-                                                  1)  # attn_mask : [batch_size, n_heads, seq_len, seq_len]
+            attn_mask = attn_mask.unsqueeze(1).repeat(1, self.n_heads, 1, 1)  # attn_mask : [batch_size, n_heads, seq_len, seq_len]
+
         # context: [batch_size, n_heads, len_q, d_v], attn: [batch_size, n_heads, len_q, len_k]
         context, res_attn = ScaledDotProductAttention(self.d_k, self.num_of_d)(Q, K, V, attn_mask, res_att)
 
-        context = context.transpose(2, 3).reshape(batch_size, self.num_of_d, -1,
-                                                  self.n_heads * self.d_v)  # context: [batch_size, len_q, n_heads * d_v]
+        context = context.transpose(1, 2).reshape(batch_size, -1, self.n_heads * self.d_v)  # context: [batch_size, len_q, n_heads * d_v]
         output = self.fc(context)  # [batch_size, len_q, d_model]
-
+        print("Context shape:", context.shape)  # Should be (batch_size, n_heads, len_q, d_v)
+        print("Output shape:", output.shape)  # Should be (batch_size, len_q, d_model)
         return nn.LayerNorm(self.d_model).to(self.DEVICE)(output + residual), res_attn
-
 
 class cheb_conv_withSAt(nn.Module):
     '''
