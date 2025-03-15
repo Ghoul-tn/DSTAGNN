@@ -106,7 +106,6 @@ def train_main(rank, world_size, args):
         adj_mx = load_weighted_adjacency_matrix2(adj_filename, num_of_vertices)
 
     # Handle STAG and STRG files (set to None if not provided)
-    # Load STAG and STRG (if provided)
     adj_TMD = None
     adj_pa = None
     if stag_filename is not None and stag_filename != 'None':
@@ -114,9 +113,10 @@ def train_main(rank, world_size, args):
     if strg_filename is not None and strg_filename != 'None':
         adj_pa = load_PA(strg_filename)
 
-    # Create the model
+    # Create the model and move it to the correct device
     net = make_model(rank, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_mx,
                      adj_pa, adj_TMD, num_for_predict, len_input, num_of_vertices, d_model, d_k, d_v, n_heads)
+    net = net.to(rank)  # Move model to the correct device
 
     # Wrap the model with DDP
     net = DDP(net, device_ids=[rank])
@@ -154,8 +154,8 @@ def train_main(rank, world_size, args):
 
         for batch_index, batch_data in enumerate(train_loader):
             encoder_inputs, labels = batch_data
-            encoder_inputs = encoder_inputs.to(rank, non_blocking=True)
-            labels = labels.to(rank, non_blocking=True)
+            encoder_inputs = encoder_inputs.to(rank, non_blocking=True)  # Move inputs to the correct device
+            labels = labels.to(rank, non_blocking=True)  # Move labels to the correct device
 
             optimizer.zero_grad()
             outputs = net(encoder_inputs)
@@ -206,7 +206,7 @@ def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type
         predictions = []
         for batch_index, batch_data in enumerate(data_loader):
             encoder_inputs, _ = batch_data
-            encoder_inputs = encoder_inputs.to(rank, non_blocking=True)
+            encoder_inputs = encoder_inputs.to(rank, non_blocking=True)  # Move inputs to the correct device
 
             # Forward pass
             outputs = net(encoder_inputs)
@@ -217,7 +217,6 @@ def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type
 
     # Save results
     predict_and_save_results_mstgcn(net, data_loader, data_target_tensor, global_step, _mean, _std, params_path, type)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
