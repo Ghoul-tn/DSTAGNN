@@ -340,14 +340,22 @@ def load_graphdata_channel1(graph_signal_matrix_filename, num_of_hours, num_of_d
     test_data = normalize(test_data)
 
     # Reshape the data to 4D: (num_samples, num_nodes, num_features, num_timesteps)
-    train_data = np.transpose(train_data, (1, 2, 0))  # Shape: (num_nodes, num_features, train_size)
-    train_data = np.expand_dims(train_data, axis=0)  # Shape: (1, num_nodes, num_features, train_size)
+    # For train_data, we need to create sliding windows of size `num_of_hours`
+    def create_windows(data, window_size):
+        num_samples = data.shape[0] - window_size + 1
+        windows = np.zeros((num_samples, data.shape[1], data.shape[2], window_size))
+        for i in range(num_samples):
+            windows[i] = data[i:i + window_size].transpose(1, 2, 0)  # Shape: (num_nodes, num_features, window_size)
+        return windows
 
-    val_data = np.transpose(val_data, (1, 2, 0))  # Shape: (num_nodes, num_features, val_size)
-    val_data = np.expand_dims(val_data, axis=0)  # Shape: (1, num_nodes, num_features, val_size)
+    train_data = create_windows(train_data, num_of_hours)  # Shape: (num_samples, num_nodes, num_features, num_of_hours)
+    val_data = create_windows(val_data, num_of_hours)  # Shape: (num_samples, num_nodes, num_features, num_of_hours)
+    test_data = create_windows(test_data, num_of_hours)  # Shape: (num_samples, num_nodes, num_features, num_of_hours)
 
-    test_data = np.transpose(test_data, (1, 2, 0))  # Shape: (num_nodes, num_features, test_size)
-    test_data = np.expand_dims(test_data, axis=0)  # Shape: (1, num_nodes, num_features, test_size)
+    # For targets, we need to align them with the windows
+    train_target = train_target[num_of_hours - 1:]  # Shape: (num_samples, num_nodes)
+    val_target = val_target[num_of_hours - 1:]  # Shape: (num_samples, num_nodes)
+    test_target = test_target[num_of_hours - 1:]  # Shape: (num_samples, num_nodes)
 
     # Convert to PyTorch tensors
     train_data = torch.FloatTensor(train_data).to(device)
@@ -368,7 +376,6 @@ def load_graphdata_channel1(graph_signal_matrix_filename, num_of_hours, num_of_d
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     return train_data, train_loader, train_target, val_data, val_loader, val_target, test_data, test_loader, test_target, mean, std
-
 
 def compute_val_loss_mstgcn(net, val_loader, criterion, sw, epoch, limit=None):
     '''
