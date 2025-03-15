@@ -71,10 +71,6 @@ def normalize(a):
     std = np.std(a, axis=1, keepdims=True)
     return (a - mu) / std
 
-def gen_data(data, ntr, N):
-    data = np.reshape(data, [-1, 288, N])
-    return data[0:ntr]
-
 # Parse arguments
 parser = argparse.ArgumentParser()
 parser.add_argument("--dataset", type=str, default="Gambia", help="Dataset path.")
@@ -97,6 +93,7 @@ if len(time_series.shape) == 1:
     num_nodes = data.shape[1]
     time_series = time_series.reshape(num_timesteps, num_nodes)
     print("Reshaped time_series to:", time_series.shape)
+
 # Compute the number of nodes
 num_nodes = time_series.shape[1]
 
