@@ -1,16 +1,8 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-import torch
-import torch.nn.functional as F
 import numpy as np
 import pandas as pd
-import torch
 import time
 import argparse
-import numpy as np
 from scipy.optimize import linprog
-
-np.seterr(divide='ignore', invalid='ignore')
 
 def check_data(data, name):
     if np.any(np.isnan(data)) or np.any(np.isinf(data)):
@@ -40,10 +32,6 @@ def wasserstein_distance(p, q, D):
     check_data(A_eq, "A_eq")
     check_data(b_eq, "b_eq")
 
-    print("D shape:", D.shape, "Sample:", D[:10])
-    print("A_eq shape:", A_eq.shape, "Sample:", A_eq[:10])
-    print("b_eq shape:", b_eq.shape, "Sample:", b_eq[:10])
-
     result = linprog(D, A_eq=A_eq[:-1], b_eq=b_eq[:-1])
     myresult = result.fun
 
@@ -72,65 +60,66 @@ def spatial_temporal_similarity(x, y, normal, transpose):
         y = np.transpose(y)
     return 1 - spatial_temporal_aware_distance(x, y)
 
+def normalize(a):
+    mu = np.mean(a, axis=1, keepdims=True)
+    std = np.std(a, axis=1, keepdims=True)
+    return (a - mu) / std
+
 def gen_data(data, ntr, N):
-    '''
-    if flag:
-        data=pd.read_csv(fname)
-    else:
-        data=pd.read_csv(fname,header=None)
-    '''
-    data=np.reshape(data,[-1,288,N])
+    data = np.reshape(data, [-1, 288, N])
     return data[0:ntr]
 
-def normalize(a):
-    mu=np.mean(a,axis=1,keepdims=True)
-    std=np.std(a,axis=1,keepdims=True)
-    return (a-mu)/std
-
-
+# Parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument("--dataset", type=str, default="PEMS03", help="Dataset path.")
-parser.add_argument("--period", type=int, default=288, help="Time series perios.")
-parser.add_argument("--sparsity", type=float, default=0.01, help="sparsity of spatial graph")
-
+parser.add_argument("--dataset", type=str, default="Gambia", help="Dataset path.")
+parser.add_argument("--period", type=int, default=12, help="Time series period.")
+parser.add_argument("--sparsity", type=float, default=0.01, help="Sparsity of spatial graph.")
 args = parser.parse_args()
 
-# Load the dataset
-data = np.load(args.dataset)['data']  # Load the .npz file directly
+# Load the multivariate time series data
+data = np.load("/kaggle/input/gambia-files/Gambia_UpperRiver_multivariate_data.npz")["data"]  # Shape: (num_timesteps, num_nodes, num_features)
 
-num_samples, ndim, _ = data.shape
-num_train = int(num_samples * 0.6)
-num_sta = int(num_train / args.period) * args.period
-data = data[:num_sta, :, :1].reshape([-1, args.period, ndim])
+# Extract the time series for each node (average across features)
+time_series = data.mean(axis=2)  # Shape: (num_timesteps, num_nodes)
 
-d = np.zeros([ndim, ndim])
+# Compute the number of nodes
+num_nodes = time_series.shape[1]
+
+# Initialize the STAG matrix
+d = np.zeros([num_nodes, num_nodes])
+
+# Compute spatial-temporal similarity
 t0 = time.time()
-for i in range(ndim):
+for i in range(num_nodes):
     t1 = time.time()
-    for j in range(i + 1, ndim):
-        d[i, j] = spatial_temporal_similarity(data[:, :, i], data[:, :, j], normal=False, transpose=False)
-        print('\r', j, end='', flush=True)
+    for j in range(i + 1, num_nodes):
+        d[i, j] = spatial_temporal_similarity(time_series[:, i], time_series[:, j], normal=False, transpose=False)
+        print(f'\rProcessing node pair ({i}, {j})', end='', flush=True)
     t2 = time.time()
-    print('Line', i, 'finished in', t2 - t1, 'seconds.')
+    print(f'Line {i} finished in {t2 - t1} seconds.')
 
-sta = d + d.T
+# Symmetrize the matrix
+stag = d + d.T
 
-np.save("stag_001_Gambia.npy", sta)
-print("The calculation of time series is done!")
+# Save the STAG matrix
+np.save(f"{args.dataset}/stag_{args.sparsity}_{args.dataset}.npy", stag)
+print("STAG matrix calculation is done!")
 t3 = time.time()
-print('total finished in', t3 - t0, 'seconds.')
-adj = np.load("stag_001_Gambia.npy")
-id_mat = np.identity(ndim)
+print(f'Total time: {t3 - t0} seconds.')
+
+# Generate the adjacency matrix from STAG
+adj = np.load(f"{args.dataset}/stag_{args.sparsity}_{args.dataset}.npy")
+id_mat = np.identity(num_nodes)
 adjl = adj + id_mat
 adjlnormd = adjl / adjl.mean(axis=0)
 
 adj = 1 - adjl + id_mat
-A_adj = np.zeros([ndim, ndim])
-R_adj = np.zeros([ndim, ndim])
-# A_adj = adj
-adj_percent = args.sparsity
+A_adj = np.zeros([num_nodes, num_nodes])
+R_adj = np.zeros([num_nodes, num_nodes])
 
-top = int(ndim * adj_percent)
+# Apply sparsity threshold
+adj_percent = args.sparsity
+top = int(num_nodes * adj_percent)
 
 for i in range(adj.shape[0]):
     a = adj[i, :].argsort()[0:top]
@@ -138,15 +127,16 @@ for i in range(adj.shape[0]):
         A_adj[i, a[j]] = 1
         R_adj[i, a[j]] = adjlnormd[i, a[j]]
 
-for i in range(ndim):
-    for j in range(ndim):
+for i in range(num_nodes):
+    for j in range(num_nodes):
         if i == j:
             R_adj[i][j] = adjlnormd[i, j]
 
-print("Total route number: ", ndim)
-print("Sparsity of adj: ", len(A_adj.nonzero()[0]) / (ndim * ndim))
+print("Total route number: ", num_nodes)
+print("Sparsity of adj: ", len(A_adj.nonzero()[0]) / (num_nodes * num_nodes))
 
-pd.DataFrame(A_adj).to_csv("stag_001_Gambia.csv", index=False, header=None)
-pd.DataFrame(R_adj).to_csv("strg_001_Gambia.csv", index=False, header=None)
+# Save the adjacency matrix
+pd.DataFrame(A_adj).to_csv(f"{args.dataset}/stag_{args.sparsity}_{args.dataset}.csv", index=False, header=None)
+pd.DataFrame(R_adj).to_csv(f"{args.dataset}/strg_{args.sparsity}_{args.dataset}.csv", index=False, header=None)
 
-print("The weighted matrix of temporal graph is generated!")
+print("The weighted matrix of the temporal graph is generated!")
