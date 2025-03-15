@@ -419,8 +419,8 @@ def make_model(DEVICE, num_of_d, nb_block, in_channels, K,
     :param nb_chev_filter:
     :param nb_time_filter:
     :param time_strides:
-    :param num_for_predict:
-    :param len_input
+    :param num_for_predict: Number of future timesteps to predict
+    :param len_input: Number of timesteps in the input data
     :return:
     '''
     L_tilde = scaled_Laplacian(adj_mx)
