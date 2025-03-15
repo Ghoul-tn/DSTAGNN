@@ -52,6 +52,12 @@ def spatial_temporal_aware_distance(x, y):
     return wasserstein_distance(p, q, D)
 
 def spatial_temporal_similarity(x, y, normal, transpose):
+    # Ensure x and y are 2D arrays
+    if len(x.shape) == 1:
+        x = x.reshape(-1, 1)
+    if len(y.shape) == 1:
+        y = y.reshape(-1, 1)
+
     if normal:
         x = normalize(x)
         y = normalize(y)
@@ -81,7 +87,16 @@ data = np.load("/kaggle/input/gambia-files/Gambia_UpperRiver_multivariate_data.n
 
 # Extract the time series for each node (average across features)
 time_series = data.mean(axis=2)  # Shape: (num_timesteps, num_nodes)
+
+# Debug: Check the shape of time_series
 print("Shape of time_series:", time_series.shape)
+
+# If time_series is 1D, reshape it
+if len(time_series.shape) == 1:
+    num_timesteps = data.shape[0]
+    num_nodes = data.shape[1]
+    time_series = time_series.reshape(num_timesteps, num_nodes)
+    print("Reshaped time_series to:", time_series.shape)
 # Compute the number of nodes
 num_nodes = time_series.shape[1]
 
