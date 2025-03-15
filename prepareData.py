@@ -156,7 +156,7 @@ def read_and_generate_dataset(graph_signal_matrix_filename,
     # Save the datasets (optional)
     if save:
         file = os.path.basename(graph_signal_matrix_filename).split('.')[0]
-        dirpath = os.path.dirname(graph_signal_matrix_filename)
+        dirpath = os.path.dirname("/kaggle/working/")
         filename = os.path.join(dirpath, f"{file}_r{num_of_hours}_d{num_of_days}_w{num_of_weeks}_dstagnn")
         print('save file:', filename)
         np.savez_compressed(filename,
