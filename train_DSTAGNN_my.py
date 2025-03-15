@@ -14,8 +14,6 @@ from model.DSTAGNN_my import make_model
 from lib.dataloader import load_weighted_adjacency_matrix, load_weighted_adjacency_matrix2, load_PA
 from lib.utils1 import load_graphdata_channel1, get_adjacency_matrix2, compute_val_loss_mstgcn, predict_and_save_results_mstgcn
 from tensorboardX import SummaryWriter
-from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.distributed as dist
 
 
 def seed_torch(seed):
@@ -29,18 +27,12 @@ def seed_torch(seed):
     torch.backends.cudnn.deterministic = True
 
 
-def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12356'  # Change port
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-
-
-def cleanup():
-    dist.destroy_process_group()
-
-
-def train_main(rank, world_size, args):
-    setup(rank, world_size)
+def train_main():
+    # Parse arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default='configurations/Gambia.conf', type=str,
+                        help="configuration file path")
+    args = parser.parse_args()
 
     # Read configuration file
     config = configparser.ConfigParser()
@@ -83,21 +75,26 @@ def train_main(rank, world_size, args):
     d_k = int(training_config['d_k'])
     d_v = d_k
 
-    # Create output directory (only on rank 0)
+    # Set device (GPU or CPU)
+    if ctx == 'cpu':
+        DEVICE = torch.device('cpu')
+    else:
+        DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    print("DEVICE:", DEVICE)
+
+    # Create output directory
     folder_dir = '%s_h%dd%dw%d_channel%d_%e' % (model_name, num_of_hours, num_of_days, num_of_weeks, in_channels, learning_rate)
     print('folder_dir:', folder_dir)
     params_path = os.path.join('myexperiments', dataset_name, folder_dir)
     print('params_path:', params_path)
 
-    if rank == 0:  # Only rank 0 creates the directory
-        os.makedirs(params_path, exist_ok=True)  # Create directory if it doesn't exist
-
-    # Ensure all processes wait for rank 0 to create the directory
-    dist.barrier()
+    if not os.path.exists(params_path):
+        os.makedirs(params_path)
+        print('create params directory %s' % (params_path))
 
     # Load data
     _, train_loader, train_target_tensor, _, val_loader, val_target_tensor, _, test_loader, test_target_tensor, _mean, _std = load_graphdata_channel1(
-        graph_signal_matrix_filename, num_of_hours, num_of_days, num_of_weeks, rank, batch_size)
+        graph_signal_matrix_filename, num_of_hours, num_of_days, num_of_weeks, DEVICE, batch_size)
 
     # Load adjacency matrix
     if dataset_name in ['PEMS04', 'PEMS08', 'PEMS07', 'PEMS03']:
@@ -113,22 +110,16 @@ def train_main(rank, world_size, args):
     if strg_filename is not None and strg_filename != 'None':
         adj_pa = load_PA(strg_filename)
 
-    # Create the model and move it to the correct device
-    net = make_model(rank, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_mx,
+    # Create the model
+    net = make_model(DEVICE, num_of_d, nb_block, in_channels, K, nb_chev_filter, nb_time_filter, time_strides, adj_mx,
                      adj_pa, adj_TMD, num_for_predict, len_input, num_of_vertices, d_model, d_k, d_v, n_heads)
-    net = net.to(rank)  # Move model to the correct device
+    net = net.to(DEVICE)  # Move model to the correct device
 
-    # Wrap the model with DDP
-    net = DDP(net, device_ids=[rank])
-
-    # Initialize SummaryWriter (only on rank 0)
-    if rank == 0:
-        sw = SummaryWriter(logdir=params_path, flush_secs=5)
-    else:
-        sw = None
+    # Initialize SummaryWriter
+    sw = SummaryWriter(logdir=params_path, flush_secs=5)
 
     # Train the model
-    criterion = nn.SmoothL1Loss().to(rank)
+    criterion = nn.SmoothL1Loss().to(DEVICE)
     optimizer = optim.Adam(net.parameters(), lr=learning_rate)
 
     global_step = 0
@@ -144,18 +135,17 @@ def train_main(rank, world_size, args):
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_epoch = epoch
-            if rank == 0:  # Only rank 0 saves the model
-                torch.save(net.state_dict(), params_filename)
-                print('best epoch: ', best_epoch)
-                print('best val loss: ', best_val_loss)
-                print('save parameters to file: %s' % params_filename)
+            torch.save(net.state_dict(), params_filename)
+            print('best epoch: ', best_epoch)
+            print('best val loss: ', best_val_loss)
+            print('save parameters to file: %s' % params_filename)
 
         net.train()  # Ensure dropout layers are in train mode
 
         for batch_index, batch_data in enumerate(train_loader):
             encoder_inputs, labels = batch_data
-            encoder_inputs = encoder_inputs.to(rank, non_blocking=True)  # Move inputs to the correct device
-            labels = labels.to(rank, non_blocking=True)  # Move labels to the correct device
+            encoder_inputs = encoder_inputs.to(DEVICE, non_blocking=True)  # Move inputs to the correct device
+            labels = labels.to(DEVICE, non_blocking=True)  # Move labels to the correct device
 
             optimizer.zero_grad()
             outputs = net(encoder_inputs)
@@ -165,22 +155,17 @@ def train_main(rank, world_size, args):
 
             training_loss = loss.item()
             global_step += 1
+            sw.add_scalar('training_loss', training_loss, global_step)
 
-            if rank == 0:  # Only rank 0 logs the training loss
-                sw.add_scalar('training_loss', training_loss, global_step)
-
-            if global_step % 1000 == 0 and rank == 0:
+            if global_step % 1000 == 0:
                 print('global step: %s, training loss: %.2f, time: %.2fs' % (global_step, training_loss, time() - start_time))
 
     print('best epoch:', best_epoch)
     # Apply the best model on the test set
-    if rank == 0:
-        predict_main(best_epoch, test_loader, test_target_tensor, _mean, _std, 'test', rank)
-
-    cleanup()
+    predict_main(best_epoch, test_loader, test_target_tensor, _mean, _std, 'test', DEVICE)
 
 
-def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type, rank):
+def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type, DEVICE):
     '''
     :param global_step: int
     :param data_loader: torch.utils.data.utils.DataLoader
@@ -188,14 +173,14 @@ def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type
     :param mean: (1, 1, 3, 1)
     :param std: (1, 1, 3, 1)
     :param type: string
-    :param rank: int, rank of the current process
+    :param DEVICE: torch.device, device to use for inference
     :return:
     '''
     params_filename = os.path.join(params_path, 'epoch_%s.params' % global_step)
     print('load weight from:', params_filename)
 
     # Load the model state dict
-    state_dict = torch.load(params_filename, map_location=f'cuda:{rank}')
+    state_dict = torch.load(params_filename, map_location=DEVICE)
     net.load_state_dict(state_dict)
 
     # Set the model to evaluation mode
@@ -206,7 +191,7 @@ def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type
         predictions = []
         for batch_index, batch_data in enumerate(data_loader):
             encoder_inputs, _ = batch_data
-            encoder_inputs = encoder_inputs.to(rank, non_blocking=True)  # Move inputs to the correct device
+            encoder_inputs = encoder_inputs.to(DEVICE, non_blocking=True)  # Move inputs to the correct device
 
             # Forward pass
             outputs = net(encoder_inputs)
@@ -218,11 +203,7 @@ def predict_main(global_step, data_loader, data_target_tensor, _mean, _std, type
     # Save results
     predict_and_save_results_mstgcn(net, data_loader, data_target_tensor, global_step, _mean, _std, params_path, type)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default='configurations/Gambia.conf', type=str,
-                        help="configuration file path")
-    args = parser.parse_args()
 
-    world_size = torch.cuda.device_count()
-    torch.multiprocessing.spawn(train_main, args=(world_size, args), nprocs=world_size, join=True)
+if __name__ == "__main__":
+    seed_torch(1)  # Set seed for reproducibility
+    train_main()
