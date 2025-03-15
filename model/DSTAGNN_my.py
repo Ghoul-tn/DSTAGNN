@@ -96,16 +96,23 @@ class MultiHeadAttention(nn.Module):
         attn_mask: [batch_size, seq_len, seq_len]
         '''
         residual, batch_size = input_Q, input_Q.size(0)
-        print("Input Q shape:", input_Q.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
-        print("Input K shape:", input_K.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
-        print("Input V shape:", input_V.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
+        print("Input Q shape:", input_Q.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
+        print("Input K shape:", input_K.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
+        print("Input V shape:", input_V.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
         # Reshape and transpose the input tensors
-        input_Q = input_Q.permute(0, 2, 3, 1)  # Shape: (batch_size, num_features, num_of_hours, num_nodes)
-        input_K = input_K.permute(0, 2, 3, 1)  # Shape: (batch_size, num_features, num_of_hours, num_nodes)
-        input_V = input_V.permute(0, 2, 3, 1)  # Shape: (batch_size, num_features, num_of_hours, num_nodes)
-        print("Input Q shape after reshape:", input_Q.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
-        print("Input K shape after reshape:", input_K.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
-        print("Input V shape after reshape:", input_V.shape)  # Should be (batch_size, num_features, num_of_hours, num_nodes)
+        input_Q = input_Q.permute(0, 2, 1, 3)  # Shape: (batch_size, num_of_hours, num_nodes, num_features)
+        input_K = input_K.permute(0, 2, 1, 3)  # Shape: (batch_size, num_of_hours, num_nodes, num_features)
+        input_V = input_V.permute(0, 2, 1, 3)  # Shape: (batch_size, num_of_hours, num_nodes, num_features)
+        print("Input Q shape after reshape:", input_Q.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
+        print("Input K shape after reshape::", input_K.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
+        print("Input V shape after reshape::", input_V.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
+        # Flatten the spatial and temporal dimensions
+        input_Q = input_Q.reshape(batch_size, -1, self.d_model)  # Shape: (batch_size, num_of_hours * num_nodes, d_model)
+        input_K = input_K.reshape(batch_size, -1, self.d_model)  # Shape: (batch_size, num_of_hours * num_nodes, d_model)
+        input_V = input_V.reshape(batch_size, -1, self.d_model)  # Shape: (batch_size, num_of_hours * num_nodes, d_model)
+        print("Input Q shape after Flattening the spatial and temporal dimensions:", input_Q.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
+        print("Input K shape after Flattening the spatial and temporal dimensions:", input_K.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
+        print("Input V shape after Flattening the spatial and temporal dimensions:", input_V.shape)  # Should be (batch_size, num_of_hours * num_nodes, d_model)
         # (B, S, D) -proj-> (B, S, D_new) -split-> (B, S, H, W) -trans-> (B, H, S, W)
         Q = self.W_Q(input_Q).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)  # Q: [batch_size, n_heads, len_q, d_k]
         K = self.W_K(input_K).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)  # K: [batch_size, n_heads, len_k, d_k]
