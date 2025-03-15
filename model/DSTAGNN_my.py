@@ -414,7 +414,7 @@ def make_model(DEVICE, num_of_d, nb_block, in_channels, K,
     '''
     :param DEVICE:
     :param nb_block:
-    :param in_channels:
+    :param in_channels: Number of input features (e.g., 4 for NDVI, Soil Moisture, SPI, LST)
     :param K:
     :param nb_chev_filter:
     :param nb_time_filter:
