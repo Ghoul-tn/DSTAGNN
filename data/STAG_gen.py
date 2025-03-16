@@ -151,13 +151,13 @@ for i in range(num_nodes):
 stag = d + d.T
 
 # Save the STAG matrix
-np.save(f"{"/kaggle/working/"}/stag_{args.sparsity}_{args.dataset}.npy", stag)
+np.save(f"kaggle/working/stag_{args.sparsity}_{args.dataset}.npy", stag)
 print("STAG matrix calculation is done!")
 t3 = time.time()
 print(f'Total time: {t3 - t0} seconds.')
 
 # Generate the adjacency matrix from STAG
-adj = np.load(f"{"/kaggle/working/"}/stag_{args.sparsity}_{args.dataset}.npy")
+adj = np.load(f"/kaggle/working/stag_{args.sparsity}_{args.dataset}.npy")
 id_mat = np.identity(num_nodes)
 adjl = adj + id_mat
 adjlnormd = adjl / adjl.mean(axis=0)
@@ -185,7 +185,7 @@ print("Total route number: ", num_nodes)
 print("Sparsity of adj: ", len(A_adj.nonzero()[0]) / (num_nodes * num_nodes))
 
 # Save the adjacency matrix
-pd.DataFrame(A_adj).to_csv(f"{"/kaggle/working/"}/stag_{args.sparsity}_{args.dataset}.csv", index=False, header=None)
-pd.DataFrame(R_adj).to_csv(f"{"/kaggle/working/"}/strg_{args.sparsity}_{args.dataset}.csv", index=False, header=None)
+pd.DataFrame(A_adj).to_csv(f"{/kaggle/working/stag_{args.sparsity}_{args.dataset}.csv", index=False, header=None)
+pd.DataFrame(R_adj).to_csv(f"/kaggle/working/strg_{args.sparsity}_{args.dataset}.csv", index=False, header=None)
 
 print("The weighted matrix of the temporal graph is generated!")
