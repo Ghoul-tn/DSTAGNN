@@ -185,7 +185,7 @@ print("Total route number: ", num_nodes)
 print("Sparsity of adj: ", len(A_adj.nonzero()[0]) / (num_nodes * num_nodes))
 
 # Save the adjacency matrix
-pd.DataFrame(A_adj).to_csv(f"{/kaggle/working/stag_{args.sparsity}_{args.dataset}.csv", index=False, header=None)
+pd.DataFrame(A_adj).to_csv(f"/kaggle/working/stag_{args.sparsity}_{args.dataset}.csv", index=False, header=None)
 pd.DataFrame(R_adj).to_csv(f"/kaggle/working/strg_{args.sparsity}_{args.dataset}.csv", index=False, header=None)
 
 print("The weighted matrix of the temporal graph is generated!")
